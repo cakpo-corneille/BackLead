@@ -1,0 +1,43 @@
+# Fichiers d'environnement - SÉCURITÉ
+.env
+.venv
+venv
+*.env
+*/.env
+*.env.local
+*venv
+*.venv
+*/.env
+# Fichiers de log et temporaires
+*.log
+*.tmp
+
+# Fichiers de base de données
+*/db.sqlite3
+
+# Dossiers de cache Python
+__pycache__/
+*.pyc
+
+# Dossiers générés par le framework (ex: Django)
+staticfiles/
+media/
+
+# Dossiers de configuration de l'éditeur
+.idx/
+.idea/
+.vscode/
+
+# Fichiers système
+.DS_Store
+
+# Dossiers de dépendances et de build
+node_modules/
+dist/
+build/
+coverage/
+
+
+# Ignorer les fichiers compilés dans les migrations, mais pas les migrations elles-mêmes
+**/migrations/*.pyc
+**/migrations/__pycache__/

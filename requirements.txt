@@ -1,0 +1,50 @@
+# Core Django
+Django
+djangorestframework
+django_redis
+django-dirtyfields
+
+# Authentication JWT
+djangorestframework-simplejwt
+
+# Database
+dj-database-url
+psycopg2-binary  # PostgreSQL adapter
+
+# Environment variables
+python-decouple
+# CORS
+django-cors-headers
+
+# API Documentation
+drf-yasg
+
+# Image handling
+Pillow
+
+# Celery (async tasks)
+celery
+redis
+
+#validators
+phonenumbers
+email-validator
+
+# WSGI server for production
+gunicorn
+whitenoise
+sentry_sdk
+gevent # Asynchronous worker for Gunicorn
+
+django-anymail
+
+# Testing (optional, for development)
+coverage
+
+#
+Faker
+requests
+
+# Media Storage (S3)
+django-storages[s3]
+boto3
