@@ -228,21 +228,7 @@
         </div>
     </div>
 
-    <!-- Simulation routeur : injection de la MAC dans l'URL comme le ferait un vrai portail captif -->
-    <script>
-        (function() {
-            var mac = "{{ mac_address }}";
-            if (mac && !new URLSearchParams(window.location.search).get('mac')) {
-                var separator = window.location.search ? '&' : '?';
-                window.history.replaceState(null, '', window.location.pathname + window.location.search + separator + 'mac=' + encodeURIComponent(mac));
-            }
-        })();
-    </script>
-
     <!-- Widget WiFi Marketing -->
-    <script
-    src="https://wileadback.up.railway.app/static/core_data/widget.js"
-    data-public-key="862df3bb-4808-4a95-9a5d-47d06f43f2fc">
-    </script>
+    <script src="https://wileadback.up.railway.app/static/core_data/widget.min.js" data-public-key="009706dd-b966-4854-a37c-7f1ec2b82f3d"></script>
 </body>
 </html>

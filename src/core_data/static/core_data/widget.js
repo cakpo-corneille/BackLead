@@ -9,15 +9,22 @@
     'use strict';
 
     // ============================================================================
-    // CONFIGURATION
+    // CONFIGURATION ET AUTO-DÉTECTION
     // ============================================================================
+    
+    // Récupère l'URL du script actuel (le SDK lui-même)
+    const currentScript = document.currentScript;
+    // Extrait l'origine (ex: http://localhost:8000 ou https://wileadback.up.railway.app)
+    const scriptOrigin = currentScript ? new URL(currentScript.src).origin : '';
 
     const CONFIG = {
-        API_BASE: '/api/v1/portal/',
+        // L'API est construite dynamiquement à partir de l'endroit où est hébergé le JS
+        API_BASE: scriptOrigin ? `${scriptOrigin}/api/v1/portal/` : '/api/v1/portal/',
         STORAGE_PREFIX: 'cdw_',
         OVERLAY_Z_INDEX: 99999,
         ANIMATION_DURATION: 400
     };
+
 
     // ============================================================================
     // INTL-TEL-INPUT CDN
