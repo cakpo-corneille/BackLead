@@ -58,7 +58,8 @@ class FormSchemaSerializer(serializers.ModelSerializer):
 
         return (
             f'<script src="{script_url}" '
-            f'data-public-key="{obj.public_key}"></script>'
+            f'data-public-key="{obj.public_key}" '
+            f'data-mac="$(mac)"></script>'
         )
 
 

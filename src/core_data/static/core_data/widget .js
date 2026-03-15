@@ -1,5 +1,5 @@
 /**
- * WiFi Marketing Widget v3.0.0
+ * WiFi Marketing Widget v3.1.0
  * Collecte de leads avec double opt-in
  * 
  * @license MIT
@@ -58,65 +58,103 @@
     }
 
     function getURLParam(name) {
-        const regex = new RegExp('[?&]' + name + '=([^&]*)');
+        // Recherche insensible à la casse : certains routeurs varient la casse du paramètre
+        const regex = new RegExp('[?&]' + name + '=([^&]*)', 'i');
         const match = regex.exec(window.location.search);
         return match ? decodeURIComponent(match[1]) : null;
     }
 
     function getCurrentScript() {
-        return document.currentScript || 
+        return document.currentScript ||
                document.getElementsByTagName('script')[document.getElementsByTagName('script').length - 1];
     }
 
-    function getMacAddress() {
-        // Chaque routeur injecte l'adresse MAC du client différemment dans l'URL.
-        // On couvre les paramètres les plus courants, classés par fréquence.
-        var mac = (
-            // Génériques
-            getURLParam('mac')           ||
-            getURLParam('mac_address')   ||
-            getURLParam('client_mac')    ||
-            getURLParam('clientmac')     ||
-            // MikroTik
-            getURLParam('mac')           ||
-            // Ubiquiti UniFi
-            getURLParam('id')            ||
-            // Cisco Meraki
-            getURLParam('client_mac')    ||
-            // pfSense / OPNsense
-            getURLParam('clt_mac')       ||
-            getURLParam('clientmac')     ||
-            // OpenWRT / Coova-Chilli
-            getURLParam('chilli_mac')    ||
-            getURLParam('ChilliLibrary') ||
-            // TP-Link EAP (Omada)
-            getURLParam('ap_mac')        ||
-            getURLParam('clientMac')     ||
-            // Ruckus
-            getURLParam('sip')           ||
-            // Netgear Insight
-            getURLParam('mac_addr')      ||
-            // Aruba / HPE
-            getURLParam('aruba_mac')     ||
-            getURLParam('sta_mac')       ||
-            // Fortinet FortiGate
-            getURLParam('usermac')       ||
-            // Extreme Networks
-            getURLParam('client-mac')    ||
-            // Huawei / H3C
-            getURLParam('UserMac')       ||
-            getURLParam('user_mac')
-        );
+    /**
+     * Retourne true si la chaîne est une adresse MAC valide (formats AA:BB:CC:DD:EE:FF ou AA-BB-CC-DD-EE-FF).
+     * Nécessaire pour éviter d'accepter une valeur URL quelconque qui ne serait pas une MAC.
+     */
+    function isValidMAC(value) {
+        return /^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$/.test(value);
+    }
 
-        if (!mac) {
-            console.warn('[Widget] Adresse MAC introuvable dans l\'URL. Vérifiez la configuration de redirection du routeur.');
-            return null;
+    function getMacAddress() {
+        // -----------------------------------------------------------------------
+        // SOURCE 1 — Attribut data-mac sur la balise <script> (template serveur)
+        //
+        // MikroTik et OpenNDS permettent d'injecter des variables dans le HTML
+        // du portail captif côté serveur, AVANT que la page soit envoyée au client.
+        //
+        // L'owner ajoute data-mac="$(mac)" dans sa balise <script>.
+        // Le routeur remplace $(mac) par la vraie adresse MAC avant l'envoi.
+        // Le JS reçoit donc directement la valeur résolue dans l'attribut.
+        //
+        // Exemple d'intégration dans login.html MikroTik :
+        //   <script src="https://app.wifileads.io/widget.js"
+        //           data-public-key="VOTRE_CLE"
+        //           data-mac="$(mac)"></script>
+        //
+        // Guard : si le routeur ne supporte pas les templates, l'attribut contiendra
+        // la chaîne littérale "$(mac)" non résolue — on la rejette.
+        // -----------------------------------------------------------------------
+        const scriptTag = document.currentScript || document.querySelector('script[data-public-key]');
+        if (scriptTag) {
+            const macFromAttr = scriptTag.getAttribute('data-mac');
+            if (macFromAttr && macFromAttr !== '$(mac)') {
+                const normalized = macFromAttr.toUpperCase().replace(/-/g, ':');
+                if (isValidMAC(normalized)) {
+                    console.log('[Widget] MAC depuis attribut data-mac (template serveur) :', normalized);
+                    return normalized;
+                }
+            }
         }
 
-        // Normaliser : mettre en majuscules, accepter les formats AA:BB:CC ou AA-BB-CC
-        mac = mac.toUpperCase().replace(/-/g, ':');
-        console.log('[Widget] MAC détectée:', mac);
-        return mac;
+        // -----------------------------------------------------------------------
+        // SOURCE 2 — Paramètre dans l'URL de redirection
+        //
+        // UniFi, Coova-Chilli, Meraki, TP-Link Omada, Fortinet, Aruba…
+        // redirigent le client vers le portail captif en ajoutant la MAC dans l'URL.
+        // Chaque constructeur utilise un nom de paramètre différent.
+        //
+        // On valide chaque valeur avec isValidMAC() pour éviter de retourner
+        // un paramètre URL non-MAC qui porterait accidentellement le même nom.
+        // -----------------------------------------------------------------------
+        const urlParams = [
+            'mac',          // Générique (le plus courant)
+            'mac_address',  // Générique
+            'client_mac',   // Cisco Meraki / générique
+            'clientmac',    // Générique
+            'id',           // Ubiquiti UniFi
+            'clt_mac',      // pfSense Captive Portal (cas rares de portail externe)
+            'chilli_mac',   // Coova-Chilli (OpenWRT, Teltonika, Xirrus, LigoWave, OpenMesh…)
+            'clientMac',    // TP-Link Omada EAP
+            'ap_mac',       // TP-Link Omada EAP (variante)
+            'usermac',      // Fortinet FortiGate
+            'sta_mac',      // Aruba / HPE Instant
+            'aruba_mac',    // Aruba (variante)
+            'UserMac',      // Huawei / H3C
+            'user_mac',     // Huawei / H3C (variante)
+            'mac_addr',     // Netgear Insight
+            'client-mac',   // Extreme Networks
+            'sip',          // Ruckus (utilise l'IP comme identifiant, mais certains builds exposent la MAC ici)
+        ];
+
+        for (const param of urlParams) {
+            const val = getURLParam(param);
+            if (val) {
+                const normalized = val.toUpperCase().replace(/-/g, ':');
+                if (isValidMAC(normalized)) {
+                    console.log('[Widget] MAC depuis URL ?' + param + '= :', normalized);
+                    return normalized;
+                }
+            }
+        }
+
+        console.warn(
+            '[Widget] Adresse MAC introuvable.\n' +
+            '  → MikroTik / OpenNDS : ajoutez data-mac="$(mac)" sur la balise <script>.\n' +
+            '  → UniFi / Coova-Chilli / Meraki : vérifiez que la redirection inclut bien le paramètre MAC.'
+        );
+        return null;
     }
 
     const Storage = {
