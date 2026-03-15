@@ -1,0 +1,69 @@
+### Feuille de Route du Projet
+
+#### Phase 1 : Fiabilité et Fondations (Priorité Haute)
+
+*   **1. Validation & Normalisation des Adresses MAC :**
+    *   **Objectif :** Assurer que toutes les adresses MAC sont propres et dans un format unique (e.g., `AA:BB:CC:DD:EE:FF`), peu importe le format d'entrée de l'URL du routeur.
+    *   **Action :** Créer un utilitaire de validation robuste dans `accounts/utils.py` et l'appliquer systématiquement lors de la reconnaissance et de la soumission.
+
+*   **2. Gestion du Cycle de Vie des Médias :**
+    *   **Objectif :** Éviter les "fichiers orphelins" et garder le stockage propre.
+    *   **Action 1 (Suppression) :** Utiliser les signaux Django (`post_delete`) sur les modèles `User` et `OwnerProfile` pour supprimer automatiquement le logo associé de `MEDIA_ROOT` lors de la suppression de l'objet.
+    *   **Action 2 (Tests) :** Améliorer la commande de test (`upload_test_media`) pour qu'elle nettoie systématiquement les anciens fichiers dans le dossier de test média avant de s'exécuter.
+
+*   **3. Amélioration des Templates d'Emails :**
+    *   **Objectif :** Améliorer le professionnalisme et l'engagement.
+    *   **Action :** Remplacer les emails textuels bruts par des templates HTML riches et responsives pour l'opt-in, le reset de mot de passe, etc. Ajouter le logo et le nom de l'entreprise qui utilise le widget.
+
+*   **4. Augmentation de la Durée de Vie des Codes :**
+    *   **Objectif :** Réduire la friction pour l'utilisateur final.
+    *   **Action :** Passer la validité des codes de vérification (OTP) de, par exemple, 5 minutes à 15 minutes.
+
+#### Phase 2 : Expérience Développeur et Fonctionnalités Clés
+
+*   **5. Implémenter un Système de "Feature Flags" :**
+    *   **Objectif :** Déployer du code en continu et n'activer les fonctionnalités que lorsqu'elles sont prêtes, ou pour des utilisateurs spécifiques.
+    *   **Action :** Intégrer une bibliothèque simple comme `django-waffle` ou créer une solution maison dans les `settings` pour pouvoir activer/désactiver des pans entiers de l'application (ex: `FEATURE_TRACKING_ENABLED = True`).
+
+*   **6. Finaliser l'Application `tracking` :**
+    *   **Objectif :** Activer la collecte de données post-authentification.
+    *   **Action :** Développer le `scrapper.js` pour collecter les informations pertinentes et créer les vues/modèles nécessaires dans l'app `tracking` pour recevoir et stocker ces données.
+
+*   **7. Enrichir les Actions pour les Propriétaires (Owners) :**
+    *   **Objectif :** Donner plus de contrôle et de valeur aux propriétaires de comptes.
+    *   **Action :** Ajouter des fonctionnalités dans le futur dashboard owner pour :
+        *   Segmenter les leads (ex: par date, par champs custom).
+        *   Ajouter des notes manuelles sur un client.
+        *   Bannir/désactiver un client.
+        *   Voir l'historique de connexion d'un client.
+
+#### Phase 3 : Nouvelles Applications et Vision à Long Terme
+
+*   **8. Création d'un Dashboard pour les "Owners" :**
+    *   **Objectif :** Fournir un portail central pour que vos clients puissent gérer leurs données.
+    *   **Action :** Créer une nouvelle application (ex: `dashboard`) avec des vues protégées où les propriétaires peuvent se connecter pour :
+        *   Voir la liste de leurs leads.
+        *   Gérer les schémas de leurs formulaires.
+        *   Consulter des statistiques de base.
+
+*   **9. Implémentation de l'Application `subscribe` :**
+    *   **Objectif :** Monétiser le service.
+    *   **Action :** Développer l'app `subscribe` pour gérer des plans (ex: Gratuit, Pro). Intégrer un processeur de paiement (Stripe, Paddle) pour gérer les abonnements. Lier les fonctionnalités (ex: nombre de leads, champs custom) au plan de l'utilisateur.
+
+*   **10. Intégration de l'IA pour la Création de Formulaires :**
+    *   **Objectif :** Simplifier radicalement l'onboarding pour les propriétaires.
+    *   **Action :** Créer une fonctionnalité où l'owner décrit son business en une phrase (ex: "Je suis un coiffeur pour hommes") et une IA propose un schéma de formulaire pertinent (`{ "fields": [{"name": "type_de_cheveux", "label": "Quel est votre type de cheveux ?"}] }`).
+
+#### Mes Suggestions Supplémentaires
+
+*   **11. Export de Données (CSV/Excel) :**
+    *   **Priorité :** Haute. C'est une fonctionnalité essentielle pour les marketeurs. Permettre aux owners d'exporter la liste de leurs leads est un _must-have_.
+
+*   **12. Analytiques et Rapports Visuels :**
+    *   **Priorité :** Moyenne. Dans le dashboard owner, ajouter des graphiques simples : leads par jour, répartition par genre (si collecté), etc.
+
+*   **13. Webhooks pour les Leads :**
+    *   **Priorité :** Moyenne. Permettre aux owners de configurer une URL qui sera notifiée en temps réel à chaque nouveau lead. Très puissant pour l'intégration avec des outils comme Zapier ou des CRM.
+
+*   **14. Internationalisation (i18n) Complète :**
+    *   **Priorité :** Basse/Moyenne. Préparer l'ensemble du code (backend et widget) à être traduit en plusieurs langues en utilisant les outils de Django et des bibliothèques JS.
