@@ -35,7 +35,7 @@ def create_default_form_schema(sender, instance, created, **kwargs):
                 "schema": {
                     "fields": [
                         {"name": "nom", "label": "Nom", "placeholder": "votre nom", "type": "text", "required": True},
-                        {"name": "phone", "label": "Téléphone", "placeholder": "votre numéro de téléphone", "type": "phone", "required": True},
+                        {"name": "email", "label": "Email", "placeholder": "votre email", "type": "email", "required": True},
                     ]
                 },
                 "is_default": True,
