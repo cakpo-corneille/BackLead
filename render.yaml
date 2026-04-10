@@ -1,0 +1,89 @@
+services:
+  # PostgreSQL Database
+  - type: pserv
+    name: backlead-db
+    plan: free
+    ipAllowList: []
+    postgreSQL:
+      plan: free
+      name: backlead_db
+      user: backlead_user
+
+  # Redis Key-Value Store
+  - type: redis
+    name: backlead-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
+
+  # Django Web Service
+  - type: web
+    name: backlead-web
+    plan: free
+    runtime: python
+    buildCommand: pip install -r requirements.txt && cd src && python manage.py collectstatic --noinput
+    startCommand: cd src && python manage.py migrate --noinput && python manage.py create_superuser && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    envVars:
+      - key: ENVIRONMENT
+        value: prod
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.prod
+      - key: DATABASE_URL
+        fromDatabase:
+          name: backlead-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: backlead-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: backlead-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: backlead-redis
+          property: connectionString
+      - key: SECRET_KEY
+        sync: false
+      - key: ALLOWED_HOSTS
+        value: backlead-web.onrender.com
+      - key: DEBUG
+        value: "False"
+      - key: DJANGO_SUPERUSER_EMAIL
+        sync: false
+      - key: DJANGO_SUPERUSER_PASSWORD
+        sync: false
+
+  # Celery Worker
+  - type: background
+    name: backlead-worker
+    plan: free
+    runtime: python
+    buildCommand: pip install -r requirements.txt && cd src && python manage.py collectstatic --noinput
+    startCommand: cd src && celery -A config worker --loglevel=info --concurrency=2
+    envVars:
+      - key: ENVIRONMENT
+        value: prod
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.prod
+      - key: DATABASE_URL
+        fromDatabase:
+          name: backlead-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: backlead-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: backlead-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: backlead-redis
+          property: connectionString
+      - key: SECRET_KEY
+        sync: false
+      - key: DEBUG
+        value: "False"
