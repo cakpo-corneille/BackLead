@@ -3,29 +3,20 @@ version: "1"
 # ============================================================
 # RENDER.YAML — WiFiLeads Backend
 #
-# IMPORTANT — Structure Render Blueprint :
-#   Les services (web, redis, worker) vont dans "services".
-#   PostgreSQL va dans "databases" — c'est une liste séparée.
-#   Les deux peuvent se référencer entre eux via fromDatabase.
+# Structure :
+#   envVarGroups  → variables partagées web + worker
+#   databases     → PostgreSQL (liste séparée, PAS dans services)
+#   services      → Redis, Web Django, Celery Worker
 #
-# Services gérés par ce Blueprint :
-#   - backlead-db      : PostgreSQL  (dans "databases")
-#   - backlead-redis   : Redis       (dans "services")
-#   - backlead-web     : Django API  (dans "services")
-#
-# Service à créer manuellement dans le dashboard Render :
-#   - backlead-worker  : Celery (plan free, hors Blueprint)
-#     → Attacher l'Environment Group "wifileads-shared-env"
-#     → buildCommand : pip install -r requirements.txt
-#     → startCommand : cd src && celery -A config worker --loglevel=info --concurrency=2
-#     → Ajouter DATABASE_URL, REDIS_URL, CELERY_* depuis le
-#       dashboard du service web après le 1er déploiement.
+# Deux corrections appliquées :
+#   1. fromService requiert un champ "type" (ex: type: redis)
+#   2. Le bloc worker était niché dans envVars du web — corrigé
 # ============================================================
 
 # ----------------------------------------------------------
 # ENVIRONMENT GROUP PARTAGÉ
-# Variables communes au service web ET au worker manuel.
-# Le worker peut y accéder via Settings → Environment → Add from Group.
+# Attaché au service web ET au worker pour éviter de
+# redéclarer SECRET_KEY, DEBUG, etc. dans les deux endroits.
 # ----------------------------------------------------------
 envVarGroups:
   - name: wifileads-shared-env
@@ -36,8 +27,6 @@ envVarGroups:
         value: config.prod
       - key: DEBUG
         value: "False"
-      # sync: false = Render te demande ces valeurs au premier déploiement
-      # sans jamais les stocker en clair dans ce fichier.
       - key: SECRET_KEY
         sync: false
       - key: DJANGO_SUPERUSER_EMAIL
@@ -46,40 +35,32 @@ envVarGroups:
         sync: false
 
 # ----------------------------------------------------------
-# BASES DE DONNÉES
-# PostgreSQL est défini ici, dans sa propre liste "databases".
-# Ne pas le mettre dans "services" — c'est une erreur fréquente.
+# BASES DE DONNÉES — Liste séparée, jamais dans "services"
 # ----------------------------------------------------------
 databases:
   - name: backlead-db
     databaseName: backlead_db
     user: backlead_user
     plan: free
-    ipAllowList: []   # [] = accessible uniquement depuis les services internes Render
+    ipAllowList: []
 
 # ----------------------------------------------------------
-# SERVICES
-# Tout le reste : web, redis, workers, cron jobs...
+# SERVICES — Web, Redis, Worker au même niveau d'indentation
 # ----------------------------------------------------------
 services:
 
-  # ----------------------------------------------------------
-  # 1. REDIS — Broker Celery + Cache Django
-  # ----------------------------------------------------------
+  # --------------------------------------------------------
+  # 1. REDIS
+  # --------------------------------------------------------
   - type: redis
     name: backlead-redis
     plan: free
     maxmemoryPolicy: allkeys-lru
     ipAllowList: []
 
-  # ----------------------------------------------------------
+  # --------------------------------------------------------
   # 2. SERVICE WEB — Django + Gunicorn
-  #
-  # buildCommand : exécuté une fois par déploiement, avant le
-  #   démarrage. migrate est idempotent — sans risque de re-run.
-  #
-  # startCommand : uniquement gunicorn. Un seul processus long.
-  # ----------------------------------------------------------
+  # --------------------------------------------------------
   - type: web
     name: backlead-web
     plan: free
@@ -93,11 +74,50 @@ services:
     startCommand: cd src && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --timeout 120 --log-file -
     healthCheckPath: /api/health/
     envVars:
-      # Héritage du groupe partagé (SECRET_KEY, DEBUG, ENVIRONMENT…)
       - fromGroup: wifileads-shared-env
+      - key: DATABASE_URL
+        fromDatabase:
+          name: backlead-db
+          property: connectionString
+      # CORRECTION 1 : fromService requiert "type" pour que Render
+      # sache dans quel registre chercher le service référencé.
+      - key: REDIS_URL
+        fromService:
+          name: backlead-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: backlead-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: backlead-redis
+          type: redis
+          property: connectionString
+      - key: ALLOWED_HOSTS
+        value: backlead-web.onrender.com
+      - key: WIDGET_SCRIPT_URL
+        value: https://backlead-web.onrender.com/static/core_data/widget.min.js
 
-      # Render résout ces références automatiquement au déploiement.
-      # Les valeurs réelles (URLs de connexion) sont injectées par Render.
+  # --------------------------------------------------------
+  # 3. CELERY WORKER
+  # CORRECTION 2 : ce bloc était niché dans les envVars du
+  # service web (mauvaise indentation). Il est maintenant au
+  # bon niveau — membre direct de la liste "services".
+  #
+  # Plan starter requis : le plan free n'est pas disponible
+  # pour les workers créés via Blueprint (restriction Render).
+  # --------------------------------------------------------
+  - type: worker
+    name: backlead-worker
+    plan: free
+    runtime: python
+    buildCommand: pip install -r requirements.txt && cd src && python manage.py collectstatic --noinput
+    startCommand: cd src && celery -A config worker --loglevel=info --concurrency=2
+    envVars:
+      - fromGroup: wifileads-shared-env
       - key: DATABASE_URL
         fromDatabase:
           name: backlead-db
@@ -105,58 +125,15 @@ services:
       - key: REDIS_URL
         fromService:
           name: backlead-redis
+          type: redis
           property: connectionString
       - key: CELERY_BROKER_URL
         fromService:
           name: backlead-redis
+          type: redis
           property: connectionString
       - key: CELERY_RESULT_BACKEND
         fromService:
           name: backlead-redis
+          type: redis
           property: connectionString
-
-      # Domaine public du web — utilisé par serializers.py
-      # pour construire l'URL du snippet widget dans le dashboard.
-      - key: ALLOWED_HOSTS
-        value: backlead-web.onrender.com
-      - key: WIDGET_SCRIPT_URL
-        value: https://backlead-web.onrender.com/static/core_data/widget.min.js
-
-      # ----------------------------------------------------------
-      # 3. CELERY WORKER — Tâches asynchrones
-      #
-      # Même buildCommand que le web pour avoir le même état.
-      # Le startCommand ne lance QUE celery, rien d'autre.
-      # Pas de migrate ici — le web s'en occupe déjà.
-      # ----------------------------------------------------------
-      - type: worker
-        name: backlead-worker
-        plan: free
-        runtime: python
-        buildCommand: pip install -r requirements.txt && cd src && python manage.py collectstatic --noinput
-        startCommand: cd src && celery -A config worker --loglevel=info --concurrency=2
-        envVars:
-          - key: ENVIRONMENT
-            value: prod
-          - key: DJANGO_SETTINGS_MODULE
-            value: config.prod
-          - key: DATABASE_URL
-            fromDatabase:
-              name: backlead-db
-              property: connectionString
-          - key: REDIS_URL
-            fromService:
-              name: backlead-redis
-              property: connectionString
-          - key: CELERY_BROKER_URL
-            fromService:
-              name: backlead-redis
-              property: connectionString
-          - key: CELERY_RESULT_BACKEND
-            fromService:
-              name: backlead-redis
-              property: connectionString
-          - key: SECRET_KEY
-            sync: false
-          - key: DEBUG
-            value: "False"
