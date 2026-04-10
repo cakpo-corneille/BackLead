@@ -110,7 +110,7 @@ projects:
       # Le startCommand ne lance QUE celery, rien d'autre.
       # Pas de migrate ici — le web s'en occupe déjà.
       # ----------------------------------------------------------
-      - type: background
+      - type: worker
         name: backlead-worker
         plan: free
         runtime: python
