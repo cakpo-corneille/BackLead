@@ -2,109 +2,128 @@ version: "1"
 
 # ============================================================
 # RENDER.YAML — WiFiLeads Backend
-# Structure : 1 Project → 4 Services
-#   - backlead-db      : PostgreSQL (base de données)
-#   - backlead-redis   : Redis (broker Celery + cache)
-#   - backlead-web     : Django + Gunicorn (API)
-#   - backlead-worker  : Celery worker (tâches async)
+#
+# IMPORTANT — Structure Render Blueprint :
+#   Les services (web, redis, worker) vont dans "services".
+#   PostgreSQL va dans "databases" — c'est une liste séparée.
+#   Les deux peuvent se référencer entre eux via fromDatabase.
+#
+# Services gérés par ce Blueprint :
+#   - backlead-db      : PostgreSQL  (dans "databases")
+#   - backlead-redis   : Redis       (dans "services")
+#   - backlead-web     : Django API  (dans "services")
+#
+# Service à créer manuellement dans le dashboard Render :
+#   - backlead-worker  : Celery (plan free, hors Blueprint)
+#     → Attacher l'Environment Group "wifileads-shared-env"
+#     → buildCommand : pip install -r requirements.txt
+#     → startCommand : cd src && celery -A config worker --loglevel=info --concurrency=2
+#     → Ajouter DATABASE_URL, REDIS_URL, CELERY_* depuis le
+#       dashboard du service web après le 1er déploiement.
 # ============================================================
 
-projects:
-- name: Wileadback
-  environments:
-  - name: Production
-    services:
+# ----------------------------------------------------------
+# ENVIRONMENT GROUP PARTAGÉ
+# Variables communes au service web ET au worker manuel.
+# Le worker peut y accéder via Settings → Environment → Add from Group.
+# ----------------------------------------------------------
+envVarGroups:
+  - name: wifileads-shared-env
+    envVars:
+      - key: ENVIRONMENT
+        value: prod
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.prod
+      - key: DEBUG
+        value: "False"
+      # sync: false = Render te demande ces valeurs au premier déploiement
+      # sans jamais les stocker en clair dans ce fichier.
+      - key: SECRET_KEY
+        sync: false
+      - key: DJANGO_SUPERUSER_EMAIL
+        sync: false
+      - key: DJANGO_SUPERUSER_PASSWORD
+        sync: false
+
+# ----------------------------------------------------------
+# BASES DE DONNÉES
+# PostgreSQL est défini ici, dans sa propre liste "databases".
+# Ne pas le mettre dans "services" — c'est une erreur fréquente.
+# ----------------------------------------------------------
+databases:
+  - name: backlead-db
+    databaseName: backlead_db
+    user: backlead_user
+    plan: free
+    ipAllowList: []   # [] = accessible uniquement depuis les services internes Render
+
+# ----------------------------------------------------------
+# SERVICES
+# Tout le reste : web, redis, workers, cron jobs...
+# ----------------------------------------------------------
+services:
+
+  # ----------------------------------------------------------
+  # 1. REDIS — Broker Celery + Cache Django
+  # ----------------------------------------------------------
+  - type: redis
+    name: backlead-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
+
+  # ----------------------------------------------------------
+  # 2. SERVICE WEB — Django + Gunicorn
+  #
+  # buildCommand : exécuté une fois par déploiement, avant le
+  #   démarrage. migrate est idempotent — sans risque de re-run.
+  #
+  # startCommand : uniquement gunicorn. Un seul processus long.
+  # ----------------------------------------------------------
+  - type: web
+    name: backlead-web
+    plan: free
+    runtime: python
+    buildCommand: >
+      pip install -r requirements.txt &&
+      cd src &&
+      python manage.py migrate --noinput &&
+      python manage.py create_superuser &&
+      python manage.py collectstatic --noinput
+    startCommand: cd src && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --timeout 120 --log-file -
+    healthCheckPath: /api/health/
+    envVars:
+      # Héritage du groupe partagé (SECRET_KEY, DEBUG, ENVIRONMENT…)
+      - fromGroup: wifileads-shared-env
+
+      # Render résout ces références automatiquement au déploiement.
+      # Les valeurs réelles (URLs de connexion) sont injectées par Render.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: backlead-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: backlead-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: backlead-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: backlead-redis
+          property: connectionString
+
+      # Domaine public du web — utilisé par serializers.py
+      # pour construire l'URL du snippet widget dans le dashboard.
+      - key: ALLOWED_HOSTS
+        value: backlead-web.onrender.com
+      - key: WIDGET_SCRIPT_URL
+        value: https://backlead-web.onrender.com/static/core_data/widget.min.js
 
       # ----------------------------------------------------------
-      # 1. BASE DE DONNÉES PostgreSQL
-      # ----------------------------------------------------------
-      - type: pserv
-        name: backlead-db
-        plan: free
-        ipAllowList: []
-        postgreSQL:
-          plan: free
-          name: backlead_db
-          user: backlead_user
-
-      # ----------------------------------------------------------
-      # 2. REDIS — Broker Celery + Cache Django
-      # ----------------------------------------------------------
-      - type: redis
-        name: backlead-redis
-        plan: free
-        maxmemoryPolicy: allkeys-lru
-        ipAllowList: []
-
-      # ----------------------------------------------------------
-      # 3. SERVICE WEB — Django + Gunicorn
-      #
-      # buildCommand  : exécuté une seule fois à chaque déploiement,
-      #                 avant le démarrage. C'est ici qu'on fait
-      #                 migrate + collectstatic.
-      #
-      # startCommand  : uniquement gunicorn. Un seul processus,
-      #                 pas de logique métier ici.
-      #
-      # preDeployCommand n'est pas disponible sur le plan free,
-      # donc on met migrate dans buildCommand — c'est safe car
-      # migrate est idempotent (ne refait pas ce qui est déjà fait).
-      # ----------------------------------------------------------
-      - type: web
-        name: backlead-web
-        plan: free
-        runtime: python
-        buildCommand: >
-          pip install -r requirements.txt &&
-          cd src &&
-          python manage.py migrate --noinput &&
-          python manage.py create_superuser &&
-          python manage.py collectstatic --noinput
-        startCommand: cd src && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --timeout 120 --log-file -
-        healthCheckPath: /api/health/
-        envVars:
-          - key: ENVIRONMENT
-            value: prod
-          - key: DJANGO_SETTINGS_MODULE
-            value: config.prod
-          # Injectées automatiquement depuis les services Render ci-dessus
-          - key: DATABASE_URL
-            fromDatabase:
-              name: backlead-db
-              property: connectionString
-          - key: REDIS_URL
-            fromService:
-              name: backlead-redis
-              property: connectionString
-          - key: CELERY_BROKER_URL
-            fromService:
-              name: backlead-redis
-              property: connectionString
-          - key: CELERY_RESULT_BACKEND
-            fromService:
-              name: backlead-redis
-              property: connectionString
-          # Variables secrètes à renseigner manuellement dans le dashboard Render
-          # (sync: false = Render ne les génère pas, tu les mets toi-même)
-          - key: SECRET_KEY
-            sync: false
-          - key: DJANGO_SUPERUSER_EMAIL
-            sync: false
-          - key: DJANGO_SUPERUSER_PASSWORD
-            sync: false
-          # ALLOWED_HOSTS doit contenir ton vrai domaine Render
-          # Format : backlead-web.onrender.com (sans https://)
-          - key: ALLOWED_HOSTS
-            value: backlead-web.onrender.com
-          - key: DEBUG
-            value: "False"
-          # URL publique utilisée pour générer les snippets widget (serializers.py)
-          # Doit correspondre à l'URL réelle de ton service web Render
-          - key: WIDGET_SCRIPT_URL
-            value: https://backlead-web.onrender.com/static/core_data/widget.min.js
-
-      # ----------------------------------------------------------
-      # 4. CELERY WORKER — Tâches asynchrones
+      # 3. CELERY WORKER — Tâches asynchrones
       #
       # Même buildCommand que le web pour avoir le même état.
       # Le startCommand ne lance QUE celery, rien d'autre.
