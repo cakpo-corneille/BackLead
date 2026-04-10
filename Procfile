@@ -1,2 +1,2 @@
-web: gunicorn myproject.wsgi:application
-worker: celery -A myproject worker --loglevel=info
+web: gunicorn config.wsgi:application --chdir src --log-file -
+worker: celery -A config worker -l info --chdir src
