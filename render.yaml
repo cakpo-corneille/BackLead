@@ -1,10 +1,23 @@
 version: "1"
+
+# ============================================================
+# RENDER.YAML — WiFiLeads Backend
+# Structure : 1 Project → 4 Services
+#   - backlead-db      : PostgreSQL (base de données)
+#   - backlead-redis   : Redis (broker Celery + cache)
+#   - backlead-web     : Django + Gunicorn (API)
+#   - backlead-worker  : Celery worker (tâches async)
+# ============================================================
+
 projects:
 - name: Wileadback
   environments:
   - name: Production
     services:
-      # PostgreSQL Database
+
+      # ----------------------------------------------------------
+      # 1. BASE DE DONNÉES PostgreSQL
+      # ----------------------------------------------------------
       - type: pserv
         name: backlead-db
         plan: free
@@ -13,26 +26,48 @@ projects:
           plan: free
           name: backlead_db
           user: backlead_user
-    
-      # Redis Key-Value Store
+
+      # ----------------------------------------------------------
+      # 2. REDIS — Broker Celery + Cache Django
+      # ----------------------------------------------------------
       - type: redis
         name: backlead-redis
         plan: free
         maxmemoryPolicy: allkeys-lru
         ipAllowList: []
-    
-      # Django Web Service
+
+      # ----------------------------------------------------------
+      # 3. SERVICE WEB — Django + Gunicorn
+      #
+      # buildCommand  : exécuté une seule fois à chaque déploiement,
+      #                 avant le démarrage. C'est ici qu'on fait
+      #                 migrate + collectstatic.
+      #
+      # startCommand  : uniquement gunicorn. Un seul processus,
+      #                 pas de logique métier ici.
+      #
+      # preDeployCommand n'est pas disponible sur le plan free,
+      # donc on met migrate dans buildCommand — c'est safe car
+      # migrate est idempotent (ne refait pas ce qui est déjà fait).
+      # ----------------------------------------------------------
       - type: web
         name: backlead-web
         plan: free
         runtime: python
-        buildCommand: pip install -r requirements.txt && cd src && python manage.py collectstatic --noinput
-        startCommand: cd src && python manage.py migrate --noinput && python manage.py create_superuser && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+        buildCommand: >
+          pip install -r requirements.txt &&
+          cd src &&
+          python manage.py migrate --noinput &&
+          python manage.py create_superuser &&
+          python manage.py collectstatic --noinput
+        startCommand: cd src && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --timeout 120 --log-file -
+        healthCheckPath: /api/health/
         envVars:
           - key: ENVIRONMENT
             value: prod
           - key: DJANGO_SETTINGS_MODULE
             value: config.prod
+          # Injectées automatiquement depuis les services Render ci-dessus
           - key: DATABASE_URL
             fromDatabase:
               name: backlead-db
@@ -49,18 +84,32 @@ projects:
             fromService:
               name: backlead-redis
               property: connectionString
+          # Variables secrètes à renseigner manuellement dans le dashboard Render
+          # (sync: false = Render ne les génère pas, tu les mets toi-même)
           - key: SECRET_KEY
             sync: false
-          - key: ALLOWED_HOSTS
-            value: backlead-web.onrender.com
-          - key: DEBUG
-            value: "False"
           - key: DJANGO_SUPERUSER_EMAIL
             sync: false
           - key: DJANGO_SUPERUSER_PASSWORD
             sync: false
-    
-      # Celery Worker
+          # ALLOWED_HOSTS doit contenir ton vrai domaine Render
+          # Format : backlead-web.onrender.com (sans https://)
+          - key: ALLOWED_HOSTS
+            value: backlead-web.onrender.com
+          - key: DEBUG
+            value: "False"
+          # URL publique utilisée pour générer les snippets widget (serializers.py)
+          # Doit correspondre à l'URL réelle de ton service web Render
+          - key: WIDGET_SCRIPT_URL
+            value: https://backlead-web.onrender.com/static/core_data/widget.min.js
+
+      # ----------------------------------------------------------
+      # 4. CELERY WORKER — Tâches asynchrones
+      #
+      # Même buildCommand que le web pour avoir le même état.
+      # Le startCommand ne lance QUE celery, rien d'autre.
+      # Pas de migrate ici — le web s'en occupe déjà.
+      # ----------------------------------------------------------
       - type: background
         name: backlead-worker
         plan: free
