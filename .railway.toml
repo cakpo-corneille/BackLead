@@ -1,0 +1,11 @@
+[build]
+  builder = "railpack"
+  buildCommand = "PYTHONPATH=src python src/manage.py collectstatic --noinput"
+
+[vars]
+  DJANGO_SETTINGS_MODULE = "config.prod"
+
+[deploy]
+  startCommand = "cd src && celery -A config.celery worker --loglevel=info --concurrency=2"
+  restartPolicyType = "on_failure"
+  restartPolicyMaxRetries = 10

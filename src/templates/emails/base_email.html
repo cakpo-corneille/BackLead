@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ subject }}</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f7f9;
+            margin: 0;
+            padding: 0;
+            color: #333;
+        }
+        .container {
+            max-width: 600px;
+            margin: 20px auto;
+            background-color: #ffffff;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        }
+        .header {
+            background-color: #1a73e8;
+            color: #ffffff;
+            padding: 40px 20px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        .content {
+            padding: 40px 30px;
+            line-height: 1.6;
+        }
+        .footer {
+            background-color: #f8f9fa;
+            color: #6c757d;
+            padding: 20px;
+            text-align: center;
+            font-size: 12px;
+            border-top: 1px solid #eee;
+        }
+        .button {
+            display: inline-block;
+            padding: 12px 24px;
+            background-color: #1a73e8;
+            color: #ffffff !important;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            margin-top: 20px;
+        }
+        .otp-code {
+            font-size: 32px;
+            font-weight: bold;
+            color: #1a73e8;
+            letter-spacing: 4px;
+            margin: 20px 0;
+            text-align: center;
+            background-color: #f1f6ff;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px dashed #1a73e8;
+        }
+        .social-links {
+            margin-top: 10px;
+        }
+        .social-links a {
+            color: #6c757d;
+            text-decoration: none;
+            margin: 0 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>WiFi Leads Marketing</h1>
+        </div>
+        <div class="content">
+            {% block content %}
+            {% endblock %}
+        </div>
+        <div class="footer">
+            <p>&copy; {{ year|default:"2026" }} WiFiLeads. Tous droits réservés.</p>
+            <div class="social-links">
+                <a href="#">LinkedIn</a> | <a href="#">Website</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

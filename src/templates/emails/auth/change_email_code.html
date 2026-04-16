@@ -1,0 +1,15 @@
+{% extends "emails/base_email.html" %}
+
+{% block content %}
+    <p>Bonjour,</p>
+    <p>Vous avez demandé à changer votre adresse email sur votre compte <strong>WiFiLeads Marketing</strong>.</p>
+    <p>Pour confirmer ce changement, veuillez utiliser le code ci-dessous :</p>
+    
+    <div class="otp-code">{{ code }}</div>
+    
+    <p>Ce code est valide pendant <strong>{{ ttl_minutes }} minutes</strong>. Il doit être saisi sur votre tableau de bord pour valider la nouvelle adresse.</p>
+    
+    <p>Si vous n'êtes pas à l'origine de cette demande, nous vous recommandons de sécuriser votre compte.</p>
+    
+    <p>Cordialement,<br>L'équipe WiFiLeads</p>
+{% endblock %}

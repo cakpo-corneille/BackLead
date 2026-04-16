@@ -1,0 +1,14 @@
+
+[build]
+ builder = "railpack"
+ buildCommand = "PYTHONPATH=src python src/manage.py collectstatic --noinput"
+
+[vars]
+ DJANGO_SETTINGS_MODULE = "config.prod"
+
+[deploy]
+ startCommand = "cd src && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
+ # The pre-deploy command now verifies the email service after creating the superuser.
+ preDeployCommand = "python src/manage.py check_prod_settings && python src/manage.py migrate --noinput && python src/manage.py create_superuser && python src/manage.py send_test_email && python src/manage.py upload_test_media --keep"
+ restartPolicyType = "on_failure"
+ restartPolicyMaxRetries = 10
