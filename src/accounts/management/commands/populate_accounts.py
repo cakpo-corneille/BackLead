@@ -183,7 +183,7 @@ class Command(BaseCommand):
                 'password': 'CliniqueP1',
                 'business_name': 'Clinique Santé Plus',
                 'nom': 'Ahouandjinou',
-                'prenom': 'Docteur Serge',
+                'prenom': 'Serge',
                 'phone_contact': '+22988012345',
                 'whatsapp_contact': '+22988012345',
                 'pays': 'Bénin',
@@ -193,6 +193,36 @@ class Command(BaseCommand):
                 'logo_color': '#009688',
                 'logo_text': 'SP',
             },
+            {
+                'email': 'hotel.parakou@example.com',
+                'password': 'ParakouP1',
+                'business_name': 'Hôtel Parakou Palace',
+                'nom': 'Olouwa',
+                'prenom': 'Fatima',
+                'phone_contact': '+22997765432',
+                'whatsapp_contact': '+22997765432',
+                'pays': 'Bénin',
+                'ville': 'Parakou',
+                'quartier': 'Zongo-Kpèbié',
+                'main_goal': 'marketing',
+                'logo_color': '#1ABC9C',
+                'logo_text': 'HP',
+            },
+            {
+                'email': 'maquis.ouidah@example.com',
+                'password': 'OuidahP12',
+                'business_name': 'Maquis Bord de Mer',
+                'nom': 'Aïzannon',
+                'prenom': 'Gildas',
+                'phone_contact': '+22996543210',
+                'whatsapp_contact': '+22996543210',
+                'pays': 'Bénin',
+                'ville': 'Ouidah',
+                'quartier': 'Docomé',
+                'main_goal': 'collect_leads',
+                'logo_color': '#16A085',
+                'logo_text': 'MB',
+            },
         ]
 
         created_count = 0
@@ -200,6 +230,15 @@ class Command(BaseCommand):
 
         for owner_data in owners_data:
             try:
+                # Vérifier si l'utilisateur existe déjà
+                if User.objects.filter(email=owner_data['email']).exists():
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f'⚠ Ignoré (existe déjà) : {owner_data["email"]}'
+                        )
+                    )
+                    continue
+
                 # Extraire les données pour le logo
                 logo_color = owner_data.pop('logo_color')
                 logo_text = owner_data.pop('logo_text')
@@ -209,7 +248,7 @@ class Command(BaseCommand):
                     email=owner_data['email'],
                     password=owner_data['password']
                 )
-                
+
                 # Marquer comme vérifié pour les tests
                 user.is_verify = True
                 user.save()
@@ -248,8 +287,8 @@ class Command(BaseCommand):
                 created_count += 1
                 self.stdout.write(
                     self.style.SUCCESS(
-                        f'✓ Créé: {owner_data["business_name"]} ({owner_data["email"]}) - '
-                        f'Complet: {profile.is_complete} | Onboarding: {profile.pass_onboarding}'
+                        f'✓ Créé : {owner_data["business_name"]} ({owner_data["email"]}) | '
+                        f'Complet : {profile.is_complete} | Onboarding : {profile.pass_onboarding}'
                     )
                 )
 
@@ -257,7 +296,7 @@ class Command(BaseCommand):
                 error_count += 1
                 self.stdout.write(
                     self.style.ERROR(
-                        f'✗ Erreur pour {owner_data.get("email", "unknown")}: {str(e)}'
+                        f'✗ Erreur pour {owner_data.get("email", "unknown")} : {str(e)}'
                     )
                 )
 
@@ -268,33 +307,41 @@ class Command(BaseCommand):
                 f'✓ {created_count} propriétaires créés avec succès'
             )
         )
-        
+
         if error_count > 0:
             self.stdout.write(
                 self.style.ERROR(
                     f'✗ {error_count} erreurs rencontrées'
                 )
             )
-        
+
         self.stdout.write(
             self.style.MIGRATE_HEADING(
-                '\nIdentifiants de connexion:'
+                '\nIdentifiants de connexion :'
             )
         )
-        self.stdout.write('  • cafe.akpakpa@example.com → CafePass123')
-        self.stdout.write('  • restaurant.marina@example.com → RestauPass1')
-        self.stdout.write('  • hotel.benin@example.com → HotelPass1')
-        self.stdout.write('  • (+ 7 autres comptes)')
+        self.stdout.write('  • cafe.akpakpa@example.com        → CafePass123')
+        self.stdout.write('  • restaurant.marina@example.com   → RestauPass1')
+        self.stdout.write('  • hotel.benin@example.com         → HotelPass1')
+        self.stdout.write('  • bar.fidjrosse@example.com       → BarPass123')
+        self.stdout.write('  • salon.coiffure@example.com      → SalonPass1')
+        self.stdout.write('  • boutique.mode@example.com       → BoutiqueP1')
+        self.stdout.write('  • pizzeria.porto@example.com      → PizzaPass1')
+        self.stdout.write('  • gym.fitness@example.com         → GymPass123')
+        self.stdout.write('  • librairie.savoir@example.com    → LibraPass1')
+        self.stdout.write('  • clinique.sante@example.com      → CliniqueP1')
+        self.stdout.write('  • hotel.parakou@example.com       → ParakouP1')
+        self.stdout.write('  • maquis.ouidah@example.com       → OuidahP12')
         self.stdout.write(self.style.MIGRATE_HEADING('='*60))
 
     def generate_logo(self, text, bg_color):
         """
         Génère un logo simple avec les initiales sur fond coloré.
-        
+
         Args:
             text (str): Texte à afficher (généralement 2 lettres)
             bg_color (str): Couleur de fond en hexadécimal (ex: '#3498DB')
-        
+
         Returns:
             ContentFile: Fichier image prêt à être sauvegardé
         """
@@ -303,84 +350,81 @@ class Command(BaseCommand):
                 self.style.WARNING('PIL non disponible - installation de Pillow recommandée')
             )
             return self._generate_placeholder_logo()
-        
+
         try:
             # Dimensions du logo
             size = (400, 400)
-            
+
             # Créer l'image
             image = Image.new('RGB', size, bg_color)
             draw = ImageDraw.Draw(image)
-            
+
             # Essayer plusieurs polices dans l'ordre de préférence
             font = None
             font_paths = [
                 '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+                '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
                 '/System/Library/Fonts/Helvetica.ttc',
                 '/Library/Fonts/Arial.ttf',
-                '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
                 'C:\\Windows\\Fonts\\arial.ttf',
             ]
-            
+
             font_size = 180
-            
+
             for path in font_paths:
                 if os.path.exists(path):
                     try:
                         font = ImageFont.truetype(path, font_size)
                         break
-                    except Exception as e:
+                    except Exception:
                         continue
-            
-            # Fallback : police par défaut (petite)
+
+            # Fallback : police par défaut
             if not font:
                 try:
                     font = ImageFont.load_default()
-                    # Adapter le texte pour la petite police
                     text = text[:2].upper()
                 except Exception:
-                    # Ultime fallback : retour à un logo placeholder
                     return self._generate_placeholder_logo(bg_color)
-            
+
             # Calculer la position pour centrer le texte
             try:
                 bbox = draw.textbbox((0, 0), text, font=font)
                 text_width = bbox[2] - bbox[0]
                 text_height = bbox[3] - bbox[1]
             except Exception:
-                # Fallback pour anciennes versions de PIL
                 text_width, text_height = draw.textsize(text, font=font)
-            
+
             position = (
                 (size[0] - text_width) // 2,
-                (size[1] - text_height) // 2 - 20  # Ajustement vertical
+                (size[1] - text_height) // 2 - 20
             )
-            
+
             # Dessiner le texte en blanc
             draw.text(position, text, fill='white', font=font)
-            
+
             # Sauvegarder dans un buffer
             buffer = BytesIO()
             image.save(buffer, format='PNG')
             buffer.seek(0)
-            
+
             return ContentFile(buffer.read())
-            
+
         except Exception as e:
             self.stdout.write(
                 self.style.WARNING(
-                    f'Erreur génération logo avec PIL: {e} - Utilisation placeholder'
+                    f'Erreur génération logo avec PIL : {e} - Utilisation placeholder'
                 )
             )
             return self._generate_placeholder_logo(bg_color)
-    
+
     def _generate_placeholder_logo(self, bg_color='#CCCCCC'):
         """
         Génère un logo placeholder simple en cas d'erreur.
-        
+
         Args:
             bg_color (str): Couleur de fond
-        
+
         Returns:
             ContentFile: Logo placeholder
         """
@@ -392,6 +436,4 @@ class Command(BaseCommand):
             buffer.seek(0)
             return ContentFile(buffer.read())
         except Exception:
-            # Si même le placeholder échoue, retourner un buffer vide
-            # Le modèle utilisera alors le logo par défaut
             return ContentFile(b'')

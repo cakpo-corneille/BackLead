@@ -1,756 +1,318 @@
 # WiFi Marketing Platform - Documentation Frontend
 
-**Version:** 2.0  
-**Date:** Février 2026  
-**Public:** Développeurs Frontend (Dashboard Owner)
-
----
-
-## Table des matières
-
-1. [Vue d'ensemble](#vue-densemble)
-2. [Architecture](#architecture)
-3. [Authentification](#authentification)
-4. [Endpoints API Dashboard](#endpoints-api-dashboard)
-5. [Modèles de données](#modèles-de-données)
-6. [Gestion des erreurs](#gestion-des-erreurs)
-7. [Exemples de flux](#exemples-de-flux)
-
----
-
-## Vue d'ensemble
-
-### Contexte
-Le dashboard permet aux propriétaires (owners) de :
-- Configurer leur formulaire de collecte de leads
-- Consulter les analytics en temps réel
-- Gérer leurs leads collectés
-- Sécuriser leur intégration via rotation de clés
-
-### Base URL
-```
-Production: https://api.votre-domaine.com
-Development: http://localhost:8000
-```
-
-### Format des requêtes
-- **Content-Type:** `application/json`
-- **Authentication:** JWT Bearer Token
-- **Encoding:** UTF-8
-
----
-
-## Architecture
-
-### Stack technique requise
-- **HTTP Client:** Axios, Fetch API, ou équivalent
-- **State Management:** Redux, Zustand, Context API (recommandé)
-- **Forms:** React Hook Form, Formik (validation côté client)
-- **Charts:** Recharts, Chart.js (pour analytics)
-
-### Cycle de vie utilisateur
-```
-1. Login → JWT Access Token + Refresh Token
-2. Fetch schema config → Affichage éditeur formulaire
-3. Update schema → Nouveau snippet généré
-4. Fetch analytics → Graphiques et KPIs
-5. Fetch leads → Table paginée
-6. Token expiry → Refresh automatique
-```
+**Version :** 3.0
+**Date :** Avril 2026
+**Public :** Développeurs Frontend (Dashboard Owner)
+**Base URL :** `https://VOTRE_DOMAINE/api/v1/`
 
 ---
 
 ## Authentification
 
-### 1. Login
-**Endpoint:** `POST /api/auth/login/`
-
-**Request:**
-```json
-{
-  "email": "owner@example.com",
-  "password": "securepassword"
-}
-```
-
-**Response (200):**
-```json
-{
-  "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "user": {
-    "id": 42,
-    "email": "owner@example.com",
-    "first_name": "John",
-    "last_name": "Doe"
-  }
-}
-```
-
-**Stockage recommandé:**
-```javascript
-localStorage.setItem('access_token', response.access);
-localStorage.setItem('refresh_token', response.refresh);
-```
-
----
-
-### 2. Token Refresh
-**Endpoint:** `POST /api/auth/refresh/`
-
-**Request:**
-```json
-{
-  "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-}
-```
-
-**Response (200):**
-```json
-{
-  "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-}
-```
-
-**Implémentation Axios Interceptor:**
-```javascript
-axios.interceptors.response.use(
-  response => response,
-  async error => {
-    if (error.response?.status === 401) {
-      const refreshToken = localStorage.getItem('refresh_token');
-      const { data } = await axios.post('/api/auth/refresh/', {
-        refresh: refreshToken
-      });
-      localStorage.setItem('access_token', data.access);
-      error.config.headers['Authorization'] = `Bearer ${data.access}`;
-      return axios(error.config);
-    }
-    return Promise.reject(error);
-  }
-);
-```
-
----
-
-### 3. Headers requis
-Toutes les requêtes authentifiées doivent inclure :
-```javascript
-headers: {
-  'Authorization': `Bearer ${accessToken}`,
-  'Content-Type': 'application/json'
-}
-```
-
----
-
-## Endpoints API Dashboard
-
-### Base: `/api/v1/schema/`
-
----
-
-### 1. GET `/api/v1/schema/config/`
-**Description:** Récupère la configuration actuelle du formulaire
-
-**Headers:**
+**Header requis pour tous les endpoints dashboard :**
 ```
 Authorization: Bearer <access_token>
 ```
 
-**Response (200):**
+---
+
+## 1. Schéma de formulaire
+
+### GET `/api/v1/schema/`
+
+Récupérer le schéma du propriétaire connecté.
+
+**Réponse 200 :**
 ```json
 {
   "id": 1,
-  "name": "default",
-  "schema": {
-    "fields": [
-      {
-        "name": "nom",
-        "label": "Nom complet",
-        "type": "text",
-        "required": true,
-        "placeholder": "Jean Dupont"
-      },
-      {
-        "name": "email",
-        "label": "Email",
-        "type": "email",
-        "required": true,
-        "placeholder": "jean@example.com"
-      },
-      {
-        "name": "phone",
-        "label": "Téléphone",
-        "type": "phone",
-        "required": false,
-        "placeholder": "+229 XX XX XX XX"
-      },
-      {
-        "name": "source",
-        "label": "Comment nous avez-vous connu ?",
-        "type": "choice",
-        "choices": ["Facebook", "Instagram", "Affiche", "Bouche-à-oreille"],
-        "required": false
-      }
-    ]
-  },
   "public_key": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "version": 5,
-  "enable": true,
-  "double_opt_enable": true,
-  "integration_snippet": "<script src=\"https://api.example.com/static/core_data/widget.js\" data-public-key=\"a1b2c3d4-e5f6-7890-abcd-ef1234567890\"></script>",
-  "created_at": "2026-01-15T10:30:00Z",
-  "updated_at": "2026-02-05T14:22:00Z"
-}
-```
-
-**Utilisation Frontend:**
-```javascript
-const fetchConfig = async () => {
-  const { data } = await axios.get('/api/v1/schema/config/', {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  
-  setFormFields(data.schema.fields);
-  setPublicKey(data.public_key);
-  setSnippet(data.integration_snippet);
-};
-```
-
----
-
-### 2. POST `/api/v1/schema/update_schema/`
-**Description:** Met à jour le schéma du formulaire
-
-**Headers:**
-```
-Authorization: Bearer <access_token>
-Content-Type: application/json
-```
-
-**Request Body:**
-```json
-{
+  "owner": 42,
+  "name": "Mon Formulaire",
+  "title": "Bienvenue !",
+  "description": "Remplissez ce formulaire pour accéder au WiFi.",
+  "logo": null,
+  "button_label": "Accéder au WiFi",
   "schema": {
     "fields": [
-      {
-        "name": "nom",
-        "label": "Nom complet",
-        "type": "text",
-        "required": true
-      },
-      {
-        "name": "email",
-        "label": "Email professionnel",
-        "type": "email",
-        "required": true
-      }
+      { "name": "nom",   "label": "Nom complet", "type": "text",  "required": true  },
+      { "name": "email", "label": "Email",        "type": "email", "required": true  },
+      { "name": "phone", "label": "Téléphone",    "type": "phone", "required": false }
     ]
   },
-  "name": "default",
-  "enable": true
+  "double_opt_enable": false,
+  "enable": true,
+  "version": 1,
+  "created_at": "2026-01-15T10:30:00Z",
+  "updated_at": "2026-04-17T14:22:00Z"
 }
 ```
 
-**Contraintes de validation:**
-- Maximum 5 champs
-- Au moins 1 champ `email` OU `phone` obligatoire
-- Types autorisés : `text`, `email`, `phone`, `number`, `choice`, `boolean`
-- Champ `email` doit avoir `name="email"`
-- Champ `choice` doit avoir un array `choices`
+---
 
-**Response (200):**
+### PATCH `/api/v1/schema/`
+
+Mettre à jour le schéma.
+
+**Body (partiel) :**
 ```json
 {
-  "id": 1,
-  "schema": { ... },
-  "version": 6,
-  "integration_snippet": "...",
-  "updated_at": "2026-02-09T15:45:00Z"
-}
-```
-
-**Erreurs possibles (400):**
-```json
-{
-  "error": "Schema must contain at least one field of type 'email' or 'phone'"
-}
-```
-
-```json
-{
-  "error": "Maximum number of fields is 5"
-}
-```
-
-**Implémentation React:**
-```javascript
-const updateSchema = async (fields) => {
-  try {
-    const { data } = await axios.post('/api/v1/schema/update_schema/', {
-      schema: { fields },
-      enable: true
-    }, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    
-    toast.success('Formulaire mis à jour avec succès');
-    setVersion(data.version);
-    setSnippet(data.integration_snippet);
-  } catch (error) {
-    toast.error(error.response.data.error);
+  "name": "Mon Nouveau Formulaire",
+  "title": "Accès WiFi Gratuit",
+  "description": "Quelques informations pour vous connecter.",
+  "button_label": "Me connecter",
+  "double_opt_enable": true,
+  "schema": {
+    "fields": [
+      { "name": "nom",   "label": "Nom",   "type": "text",  "required": true  },
+      { "name": "email", "label": "Email", "type": "email", "required": true  }
+    ]
   }
-};
-```
-
----
-
-### 3. POST `/api/v1/schema/rotate_key/`
-**Description:** Génère une nouvelle clé publique (sécurité)
-
-**Headers:**
-```
-Authorization: Bearer <access_token>
-```
-
-**Request Body:** Aucun
-
-**Response (200):**
-```json
-{
-  "public_key": "f9e8d7c6-b5a4-3210-fedc-ba9876543210",
-  "warning": "Update your portal URL with the new key",
-  "integration_snippet": "<script src=\"...\" data-public-key=\"f9e8d7c6-...\"></script>"
 }
 ```
 
-**Usage:**
-```javascript
-const rotateKey = async () => {
-  const confirmed = window.confirm(
-    'Attention : cela invalidera votre ancien widget. Continuer ?'
-  );
-  
-  if (!confirmed) return;
-  
-  const { data } = await axios.post('/api/v1/schema/rotate_key/', {}, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  
-  setPublicKey(data.public_key);
-  setSnippet(data.integration_snippet);
-  
-  toast.warning('Nouvelle clé générée. Mettez à jour votre routeur !');
-};
-```
+**Réponse 200 :** Schéma complet mis à jour (version auto-incrémentée si `schema` ou `double_opt_enable` changent)
 
 ---
 
-### Base: `/api/v1/analytics/`
+### GET `/api/v1/schema/{public_key}/public/`
+
+Récupérer le schéma public pour affichage dans le widget (endpoint non authentifié).
 
 ---
 
-### 4. GET `/api/v1/analytics/summary/`
-**Description:** Récupère les KPIs et statistiques
+## 2. Leads
 
-**Headers:**
-```
-Authorization: Bearer <access_token>
-```
+### GET `/api/v1/leads/`
 
-**Response (200):**
+Liste paginée des leads du propriétaire connecté.
+
+**Paramètres de filtrage :**
+| Paramètre    | Type    | Description                              | Exemple               |
+|--------------|---------|------------------------------------------|-----------------------|
+| `is_verified`| boolean | Filtrer par statut de vérification       | `?is_verified=true`   |
+| `search`     | string  | Recherche dans email, phone, payload     | `?search=koffi`       |
+| `date_from`  | date    | Leads créés à partir de cette date       | `?date_from=2026-01-01`|
+| `date_to`    | date    | Leads créés jusqu'à cette date           | `?date_to=2026-04-17` |
+| `ordering`   | string  | Tri des résultats                        | `?ordering=-created_at`|
+| `page`       | int     | Numéro de page                           | `?page=2`             |
+| `page_size`  | int     | Résultats par page (max 100)             | `?page_size=50`       |
+
+**Réponse 200 :**
 ```json
 {
-  "total_leads": 1523,
-  "leads_this_week": 87,
-  "verified_leads": 1205,
-  "return_rate": 34.2,
-  "top_clients": [
-    {
-      "id": 42,
-      "name": "Jean Dupont",
-      "email": "jean@example.com",
-      "phone": "+22997123456",
-      "mac_address": "AA:BB:CC:DD:EE:FF",
-      "recognition_level": 45,
-      "loyalty_percentage": 90.0,
-      "last_seen": "2026-02-07T14:32:10Z",
-      "created_at": "2025-11-15T09:20:00Z",
-      "is_verified": true
-    }
-  ],
-  "leads_by_hour": [
-    {
-      "hour": "2026-02-09T08:00:00Z",
-      "count": 12
-    },
-    {
-      "hour": "2026-02-09T09:00:00Z",
-      "count": 18
-    }
-  ]
-}
-```
-
-**Métriques:**
-- `total_leads`: Nombre total de leads collectés
-- `leads_this_week`: Leads des 7 derniers jours
-- `verified_leads`: Leads ayant validé leur email/phone
-- `return_rate`: % de clients revenus 3+ fois (recognition_level > 2)
-- `top_clients`: Top 20 clients fidèles (max 20 entrées)
-- `leads_by_hour`: Distribution des leads sur 24h glissantes
-
-**Affichage Dashboard:**
-```javascript
-const Dashboard = () => {
-  const [stats, setStats] = useState(null);
-  
-  useEffect(() => {
-    const fetchStats = async () => {
-      const { data } = await axios.get('/api/v1/analytics/summary/', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setStats(data);
-    };
-    fetchStats();
-  }, []);
-  
-  return (
-    <>
-      <KPICard title="Total Leads" value={stats.total_leads} />
-      <KPICard title="Cette semaine" value={stats.leads_this_week} />
-      <KPICard title="Taux de retour" value={`${stats.return_rate}%`} />
-      
-      <LineChart data={stats.leads_by_hour} />
-      <TopClientsTable data={stats.top_clients} />
-    </>
-  );
-};
-```
-
----
-
-### 5. GET `/api/v1/analytics/leads/`
-**Description:** Liste paginée de tous les leads
-
-**Headers:**
-```
-Authorization: Bearer <access_token>
-```
-
-**Query Parameters:**
-- `page` (optionnel): Numéro de page (défaut: 1)
-- `page_size` (optionnel): Éléments par page (défaut: 20, max: 100)
-
-**Exemple:** `GET /api/v1/analytics/leads/?page=2&page_size=50`
-
-**Response (200):**
-```json
-{
-  "count": 1523,
-  "next": "http://api.example.com/api/v1/analytics/leads/?page=3",
-  "previous": "http://api.example.com/api/v1/analytics/leads/?page=1",
+  "count": 347,
+  "next": "https://VOTRE_DOMAINE/api/v1/leads/?page=2",
+  "previous": null,
   "results": [
     {
       "id": 1,
       "mac_address": "AA:BB:CC:DD:EE:FF",
-      "email": "jean@example.com",
+      "client_token": "f8e7d6c5-b4a3-2109-8765-4321fedcba98",
+      "email": "client@example.com",
       "phone": "+22997123456",
       "payload": {
-        "nom": "Jean Dupont",
-        "email": "jean@example.com",
-        "phone": "+22997123456",
-        "source": "Facebook"
+        "nom": "Koffi",
+        "email": "client@example.com",
+        "source": "Instagram"
       },
-      "client_token": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "recognition_level": 25,
       "is_verified": true,
-      "recognition_level": 12,
-      "created_at": "2026-01-15T08:30:00Z",
-      "last_seen": "2026-02-09T14:25:00Z"
+      "tags": ["VIP", "Fidèle"],
+      "notes": "Client régulier du vendredi soir.",
+      "created_at": "2026-03-15T18:42:00Z",
+      "updated_at": "2026-04-10T09:15:00Z",
+      "last_seen": "2026-04-10T09:15:00Z"
     }
   ]
 }
 ```
 
-**Tri:** Par `last_seen` décroissant (les plus récents en premier)
+---
 
-**Table React:**
-```javascript
-const LeadsTable = () => {
-  const [leads, setLeads] = useState([]);
-  const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
-  
-  const fetchLeads = async (pageNum) => {
-    const { data } = await axios.get(`/api/v1/analytics/leads/?page=${pageNum}`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    
-    setLeads(data.results);
-    setTotal(data.count);
-  };
-  
-  return (
-    <Table>
-      <thead>
-        <tr>
-          <th>Nom</th>
-          <th>Email</th>
-          <th>Téléphone</th>
-          <th>Visites</th>
-          <th>Vérifié</th>
-          <th>Dernière visite</th>
-        </tr>
-      </thead>
-      <tbody>
-        {leads.map(lead => (
-          <tr key={lead.id}>
-            <td>{lead.payload.nom}</td>
-            <td>{lead.email}</td>
-            <td>{lead.phone}</td>
-            <td>{lead.recognition_level}</td>
-            <td>{lead.is_verified ? '✓' : '✗'}</td>
-            <td>{formatDate(lead.last_seen)}</td>
-          </tr>
-        ))}
-      </tbody>
-      <Pagination 
-        current={page} 
-        total={total} 
-        onChange={setPage}
-      />
-    </Table>
-  );
-};
+### GET `/api/v1/leads/{id}/`
+
+Détail d'un lead.
+
+**Réponse 200 :** Objet lead complet (même format que ci-dessus)
+
+---
+
+### PATCH `/api/v1/leads/{id}/`
+
+Modifier les tags et notes d'un lead.
+
+**Body :**
+```json
+{
+  "tags": ["VIP", "Fidèle"],
+  "notes": "Préfère être contacté par WhatsApp."
+}
+```
+
+**Réponse 200 :** Lead mis à jour
+
+---
+
+### DELETE `/api/v1/leads/{id}/`
+
+Supprimer un lead.
+
+**Réponse 204 :** Pas de contenu
+
+---
+
+### POST `/api/v1/leads/{id}/resend-verification/`
+
+Renvoyer manuellement un code OTP à un client non vérifié.
+
+Utile depuis le CRM quand le propriétaire veut relancer la vérification d'un client qui n'a pas complété le double opt-in.
+
+**Réponse 200 :**
+```json
+{ "detail": "Code de vérification renvoyé avec succès." }
+```
+
+**Erreurs possibles :**
+```json
+{ "detail": "Ce client est déjà vérifié." }
+{ "detail": "Token client manquant." }
 ```
 
 ---
 
-## Modèles de données
+### GET `/api/v1/leads/stats/`
 
-### FormSchema
-```typescript
-interface FormSchema {
-  id: number;
-  name: string;
-  schema: {
-    fields: FormField[];
-  };
-  public_key: string;
-  version: number;
-  enable: boolean;
-  double_opt_enable: boolean;
-  integration_snippet: string;
-  created_at: string; // ISO 8601
-  updated_at: string;
-}
-```
+Statistiques agrégées sur les leads.
 
-### FormField
-```typescript
-interface FormField {
-  name: string;
-  label: string;
-  type: 'text' | 'email' | 'phone' | 'number' | 'choice' | 'boolean';
-  required: boolean;
-  placeholder?: string;
-  choices?: string[]; // Obligatoire si type='choice'
-}
-```
-
-### Lead (OwnerClient)
-```typescript
-interface Lead {
-  id: number;
-  mac_address: string;
-  email: string | null;
-  phone: string | null;
-  payload: Record<string, any>;
-  client_token: string;
-  is_verified: boolean;
-  recognition_level: number;
-  created_at: string;
-  last_seen: string;
-}
-```
-
-### Analytics Summary
-```typescript
-interface AnalyticsSummary {
-  total_leads: number;
-  leads_this_week: number;
-  verified_leads: number;
-  return_rate: number; // Pourcentage
-  top_clients: TopClient[];
-  leads_by_hour: HourlyData[];
-}
-
-interface TopClient {
-  id: number;
-  name: string | null;
-  email: string | null;
-  phone: string | null;
-  mac_address: string;
-  recognition_level: number;
-  loyalty_percentage: number;
-  last_seen: string;
-  created_at: string;
-  is_verified: boolean;
-}
-
-interface HourlyData {
-  hour: string; // ISO 8601
-  count: number;
+**Réponse 200 :**
+```json
+{
+  "total": 347,
+  "verified": 89,
+  "verification_rate": 25.6,
+  "new_today": 12,
+  "new_this_week": 47,
+  "new_this_month": 183,
+  "avg_recognition_level": 18.4
 }
 ```
 
 ---
 
-## Gestion des erreurs
+### GET `/api/v1/leads/export/`
 
-### Codes HTTP
-| Code | Signification | Action Frontend |
-|------|---------------|-----------------|
-| 200 | Success | Afficher les données |
-| 201 | Created | Confirmation + rafraîchir |
-| 400 | Bad Request | Afficher `error` dans un toast |
-| 401 | Unauthorized | Refresh token ou redirect login |
-| 403 | Forbidden | Afficher "Accès refusé" |
-| 404 | Not Found | Afficher "Ressource introuvable" |
-| 500 | Server Error | "Erreur serveur, réessayez" |
+Export CSV de tous les leads.
 
-### Format d'erreur standard
-```json
-{
-  "error": "Schema must contain at least one field of type 'email' or 'phone'"
-}
+**Réponse 200 :** Fichier CSV (Content-Disposition: attachment)
+
+```
+Content-Type: text/csv; charset=utf-8
+Content-Disposition: attachment; filename="leads_2026-04-17.csv"
 ```
 
-Ou pour les erreurs de validation :
+---
+
+## 3. Analytics
+
+### GET `/api/v1/analytics/overview/`
+
+Vue globale du tableau de bord.
+
+**Réponse 200 :**
 ```json
 {
-  "detail": "Le champ 'email' est obligatoire."
-}
-```
-
-### Handling React
-```javascript
-const handleError = (error) => {
-  if (error.response) {
-    const message = error.response.data.error || 
-                    error.response.data.detail || 
-                    'Une erreur est survenue';
-    toast.error(message);
-    
-    if (error.response.status === 401) {
-      // Token expiré
-      refreshToken();
-    }
-  } else {
-    toast.error('Erreur réseau. Vérifiez votre connexion.');
+  "total_leads": 347,
+  "verified_leads": 89,
+  "verification_rate": 25.6,
+  "new_this_week": 47,
+  "new_this_month": 183,
+  "recognition_distribution": {
+    "inconnu":  112,
+    "visiteur":  98,
+    "regulier":  87,
+    "fidele":    50
   }
-};
+}
+```
+
+> **Cache :** Ces données sont mises en cache pendant 1 heure. Elles ne reflètent pas en temps réel les dernières soumissions.
+
+---
+
+### GET `/api/v1/analytics/leads-by-day/`
+
+Courbe temporelle des leads.
+
+**Paramètre :** `?days=30` (défaut : 30, max recommandé : 90)
+
+**Réponse 200 :**
+```json
+{
+  "labels": ["2026-03-18", "2026-03-19", "..."],
+  "data":   [12, 8, 15, 3, 22, "..."]
+}
 ```
 
 ---
 
-## Exemples de flux
+### GET `/api/v1/analytics/recognition/`
 
-### Flux 1: Édition du formulaire
-```
-1. User clique "Modifier le formulaire"
-2. Frontend: GET /api/v1/schema/config/
-3. Afficher éditeur avec `schema.fields`
-4. User ajoute/modifie des champs
-5. Frontend valide côté client (max 5 champs, email OU phone)
-6. Frontend: POST /api/v1/schema/update_schema/
-7. Backend retourne nouveau snippet
-8. Afficher toast success + copier snippet
-```
+Distribution des niveaux de fidélité.
 
-### Flux 2: Dashboard analytics
-```
-1. Page load
-2. Frontend: GET /api/v1/analytics/summary/
-3. Afficher 4 KPI cards
-4. Render graphique hourly (Recharts LineChart)
-5. Render table top clients (triée par loyalty_percentage)
-6. Auto-refresh toutes les 60 secondes
-```
-
-### Flux 3: Export leads
-```
-1. User clique "Exporter CSV"
-2. Frontend: GET /api/v1/analytics/leads/?page_size=10000
-3. Convertir JSON → CSV côté client
-4. Trigger download avec Blob API
-```
-
-**Code export CSV:**
-```javascript
-const exportCSV = async () => {
-  const { data } = await axios.get('/api/v1/analytics/leads/?page_size=10000', {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  
-  const csv = [
-    ['Nom', 'Email', 'Téléphone', 'Visites', 'Vérifié', 'Créé le'].join(','),
-    ...data.results.map(lead => [
-      lead.payload.nom || '',
-      lead.email || '',
-      lead.phone || '',
-      lead.recognition_level,
-      lead.is_verified ? 'Oui' : 'Non',
-      new Date(lead.created_at).toLocaleDateString()
-    ].join(','))
-  ].join('\n');
-  
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `leads_${Date.now()}.csv`;
-  a.click();
-};
+**Réponse 200 :**
+```json
+{
+  "inconnu":   112,
+  "visiteur":   98,
+  "regulier":   87,
+  "fidele":     50,
+  "thresholds": { "visiteur": 5, "regulier": 20, "fidele": 50 }
+}
 ```
 
 ---
 
-## Notes techniques
+### GET `/api/v1/analytics/verification-rate/`
 
-### CORS
-Le backend autorise les requêtes depuis :
-- `http://localhost:3000` (dev)
-- `https://dashboard.votre-domaine.com` (prod)
+Taux de vérification double opt-in.
 
-### Rate Limiting
-Aucun rate limiting sur les endpoints dashboard (authentifiés).
-
-### Pagination
-- Défaut : 20 éléments par page
-- Maximum : 100 éléments par page
-- Format standard Django REST Framework
-
-### Dates
-Toutes les dates sont en **ISO 8601 UTC**.  
-Convertir en local timezone côté frontend :
-```javascript
-const localDate = new Date(lead.created_at).toLocaleString('fr-FR');
+**Réponse 200 :**
+```json
+{
+  "total":       347,
+  "verified":     89,
+  "unverified":  258,
+  "rate":         25.6
+}
 ```
 
-### Websockets
-Non implémenté. Utiliser polling (refresh toutes les 60s) pour le dashboard.
+---
+
+## 4. Codes HTTP
+
+| Code | Signification                               |
+|------|---------------------------------------------|
+| 200  | Succès                                      |
+| 201  | Ressource créée                             |
+| 204  | Suppression réussie                         |
+| 400  | Erreur de validation / données incorrectes  |
+| 401  | Non authentifié (token manquant ou expiré)  |
+| 403  | Non autorisé (tentative d'accès cross-owner)|
+| 404  | Ressource non trouvée                       |
+| 500  | Erreur serveur                              |
 
 ---
 
-## Support
+## 5. Niveaux de fidélité (recognition_level)
 
-**API Base URL:** Configurée dans `.env`  
-**Documentation interactive:** `/api/docs/` (Swagger)  
-**Postman Collection:** Disponible sur demande
+| Valeur    | Label     | Seuil     |
+|-----------|-----------|-----------|
+| 0 – 4     | Inconnu   | —         |
+| 5 – 19    | Visiteur  | ≥ 5       |
+| 20 – 49   | Régulier  | ≥ 20      |
+| 50+       | Fidèle    | ≥ 50      |
 
 ---
 
-**Dernière mise à jour:** 09 Février 2026  
-**Version API:** v1
+**Documentation mise à jour le 17/04/2026**

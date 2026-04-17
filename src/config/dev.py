@@ -15,7 +15,7 @@ SECRET_KEY = 'django-insecure-l)1j=y)egohs2d=5p=3#phi=ui50$nsd&i*ecne@oq)+wnw-#p
 DEBUG = True
 
 # Autoriser l'IP locale et localhost
-ALLOWED_HOSTS = ['192.168.43.7', '192.168.43.255', '10.10.10.26', '127.0.0.1', 'localhost', '0.0.0.0']
+ALLOWED_HOSTS = ['*']
 
 # Database (développement local)
 DATABASES = {

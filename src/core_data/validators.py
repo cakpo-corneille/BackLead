@@ -208,28 +208,4 @@ def validate_payload_against_schema(payload: Dict[str, Any], schema: Dict[str, A
 
     return True, {}, clean_payload
    
-if __name__ == "__main__":
-    # Exemple d'utilisation
-    sample_schema = {
-        "fields": [
-            {"name": "email", "type": "email", "required": True},
-            {"name": "phone", "type": "phone", "required": False},
-            {"name": "age", "type": "number", "required": True},
-            {"name": "subscribe", "type": "boolean", "required": False},
-            {"name": "color", "type": "choice", "choices": ["red", "green", "blue"], "required": True},
-        ]
-    }   
-    sample_payload = {
-        "email": "test@gmail.com",
-        "phone": "+33612345678",
-        "age": 25,
-        "subscribe": True,
-        "color": "blue"
-    }
 
-    # --- Appel patché ---
-    is_valid, error, clean_payload = validate_payload_against_schema(sample_payload, sample_schema)
-    
-    print(f"Validation result: {is_valid}, Error: {error}")
-    print("Original payload:", sample_payload)
-    print("Clean payload:", clean_payload)
