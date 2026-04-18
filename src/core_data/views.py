@@ -208,7 +208,7 @@ class PortalViewSet(viewsets.ViewSet):
                 mac_address=data['mac_address'],
                 client_token=data.get('client_token')
             )
-            if result['recognized'] and result['is_verified']:
+            if result['recognized']:
                 client=OwnerClient.objects.filter(client_token=result['client_token']).first()
                 if client:
                     client.recognition_level+=1

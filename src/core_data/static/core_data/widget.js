@@ -1,7 +1,19 @@
 /**
- * WiFi Marketing Widget v3.1.0
+ * WiFi Marketing Widget v3.3.0
  * Collecte de leads avec double opt-in
- * 
+ *
+ * CORRECTIONS v3.3.0 :
+ *   [FIX-1] enable=false : removeLoadingScreen + revealPage avant le return
+ *           pour ne jamais laisser la page hôte bloquée par le loading screen.
+ *   [FIX-2] geoIpLookup encapsulé dans un Promise.race avec timeout 2 s :
+ *           sur portail captif (pas d'internet), ipapi.co est inaccessible ou
+ *           redirigé vers la page du routeur. Sans timeout, la résolution de pays
+ *           n'arrive jamais → intlTelInput reste dans un état indéfini → iti.isValidNumber()
+ *           retourne des résultats instables. Avec le timeout, on bascule proprement
+ *           sur le pays par défaut 'bj' en moins de 2 secondes.
+ *   [FIX-3] removeLoadingScreen ajouté dans le finally pour nettoyage garanti
+ *           dans tout chemin d'exécution non prévu.
+ *
  * @license MIT
  */
 
@@ -30,53 +42,44 @@
     // ============================================================================
     // CONFIGURATION ET AUTO-DÉTECTION
     // ============================================================================
-    
-    // Récupère l'URL du script actuel (le SDK lui-même)
+
     const currentScript = document.currentScript;
-    // Extrait l'origine (ex: http://localhost:8000 ou https://wileadback.up.railway.app)
     const scriptOrigin = currentScript ? new URL(currentScript.src).origin : '';
 
     const CONFIG = {
-        // L'API est construite dynamiquement à partir de l'endroit où est hébergé le JS
         API_BASE: scriptOrigin ? `${scriptOrigin}/api/v1/portal/` : '/api/v1/portal/',
         STORAGE_PREFIX: 'cdw_',
         OVERLAY_Z_INDEX: 99999,
         ANIMATION_DURATION: 400
     };
 
-
     // ============================================================================
-    // INTL-TEL-INPUT CDN
+    // INTL-TEL-INPUT (hébergé en local, jamais depuis CDN externe)
     // ============================================================================
 
     const INTL_TEL_INPUT_CSS_URL = `${scriptOrigin}/static/core_data/intl-tel-input/css/intlTelInput.min.css`;
     const INTL_TEL_INPUT_JS_URL  = `${scriptOrigin}/static/core_data/intl-tel-input/js/intlTelInputWithUtils.min.js`;
-    // utils déjà inclus dans le bundle WithUtils — pas besoin d'URL séparée
 
     // ============================================================================
     // UTILITAIRES
     // ============================================================================
 
-    // Libère la page et supprime le style FOUC
     function revealPage() {
         document.body.style.visibility = '';
         var s = document.getElementById('cdw-fouc');
         if (s && s.parentNode) s.parentNode.removeChild(s);
     }
 
-    // Bloque le scroll de la page hôte pendant l'affichage du formulaire
     function lockScroll() {
         document.documentElement.style.overflow = 'hidden';
         document.body.style.overflow = 'hidden';
     }
 
-    // Restaure le scroll de la page hôte
     function unlockScroll() {
         document.documentElement.style.overflow = '';
         document.body.style.overflow = '';
     }
 
-    // Affiche un écran de chargement qui couvre la page hôte
     function createLoadingScreen() {
         var el = document.createElement('div');
         el.id = 'cdw-loading-screen';
@@ -102,7 +105,6 @@
         return el;
     }
 
-    // Retire l'écran de chargement avec un fondu
     function removeLoadingScreen(el) {
         if (!el || !el.parentNode) return;
         el.style.transition = 'opacity 0.25s ease';
@@ -130,7 +132,6 @@
     }
 
     function getURLParam(name) {
-        // Recherche insensible à la casse : certains routeurs varient la casse du paramètre
         const regex = new RegExp('[?&]' + name + '=([^&]*)', 'i');
         const match = regex.exec(window.location.search);
         return match ? decodeURIComponent(match[1]) : null;
@@ -141,33 +142,11 @@
                document.getElementsByTagName('script')[document.getElementsByTagName('script').length - 1];
     }
 
-    /**
-     * Retourne true si la chaîne est une adresse MAC valide (formats AA:BB:CC:DD:EE:FF ou AA-BB-CC-DD-EE-FF).
-     * Nécessaire pour éviter d'accepter une valeur URL quelconque qui ne serait pas une MAC.
-     */
     function isValidMAC(value) {
         return /^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$/.test(value);
     }
 
     function getMacAddress() {
-        // -----------------------------------------------------------------------
-        // SOURCE 1 — Attribut data-mac sur la balise <script> (template serveur)
-        //
-        // MikroTik et OpenNDS permettent d'injecter des variables dans le HTML
-        // du portail captif côté serveur, AVANT que la page soit envoyée au client.
-        //
-        // L'owner ajoute data-mac="$(mac)" dans sa balise <script>.
-        // Le routeur remplace $(mac) par la vraie adresse MAC avant l'envoi.
-        // Le JS reçoit donc directement la valeur résolue dans l'attribut.
-        //
-        // Exemple d'intégration dans login.html MikroTik :
-        //   <script src="https://app.wifileads.io/widget.js"
-        //           data-public-key="VOTRE_CLE"
-        //           data-mac="$(mac)"></script>
-        //
-        // Guard : si le routeur ne supporte pas les templates, l'attribut contiendra
-        // la chaîne littérale "$(mac)" non résolue — on la rejette.
-        // -----------------------------------------------------------------------
         const scriptTag = document.currentScript || document.querySelector('script[data-public-key]');
         if (scriptTag) {
             const macFromAttr = scriptTag.getAttribute('data-mac');
@@ -180,34 +159,11 @@
             }
         }
 
-        // -----------------------------------------------------------------------
-        // SOURCE 2 — Paramètre dans l'URL de redirection
-        //
-        // UniFi, Coova-Chilli, Meraki, TP-Link Omada, Fortinet, Aruba…
-        // redirigent le client vers le portail captif en ajoutant la MAC dans l'URL.
-        // Chaque constructeur utilise un nom de paramètre différent.
-        //
-        // On valide chaque valeur avec isValidMAC() pour éviter de retourner
-        // un paramètre URL non-MAC qui porterait accidentellement le même nom.
-        // -----------------------------------------------------------------------
         const urlParams = [
-            'mac',          // Générique (le plus courant)
-            'mac_address',  // Générique
-            'client_mac',   // Cisco Meraki / générique
-            'clientmac',    // Générique
-            'id',           // Ubiquiti UniFi
-            'clt_mac',      // pfSense Captive Portal (cas rares de portail externe)
-            'chilli_mac',   // Coova-Chilli (OpenWRT, Teltonika, Xirrus, LigoWave, OpenMesh…)
-            'clientMac',    // TP-Link Omada EAP
-            'ap_mac',       // TP-Link Omada EAP (variante)
-            'usermac',      // Fortinet FortiGate
-            'sta_mac',      // Aruba / HPE Instant
-            'aruba_mac',    // Aruba (variante)
-            'UserMac',      // Huawei / H3C
-            'user_mac',     // Huawei / H3C (variante)
-            'mac_addr',     // Netgear Insight
-            'client-mac',   // Extreme Networks
-            'sip',          // Ruckus (utilise l'IP comme identifiant, mais certains builds exposent la MAC ici)
+            'mac', 'mac_address', 'client_mac', 'clientmac', 'id',
+            'clt_mac', 'chilli_mac', 'clientMac', 'ap_mac', 'usermac',
+            'sta_mac', 'aruba_mac', 'UserMac', 'user_mac', 'mac_addr',
+            'client-mac', 'sip',
         ];
 
         for (const param of urlParams) {
@@ -231,44 +187,28 @@
 
     const Storage = {
         set: function(key, value) {
-            try {
-                localStorage.setItem(CONFIG.STORAGE_PREFIX + key, value);
-            } catch (e) {
-                console.warn('[Widget] localStorage indisponible');
-            }
+            try { localStorage.setItem(CONFIG.STORAGE_PREFIX + key, value); }
+            catch (e) { console.warn('[Widget] localStorage indisponible'); }
         },
         get: function(key) {
-            try {
-                return localStorage.getItem(CONFIG.STORAGE_PREFIX + key);
-            } catch (e) {
-                return null;
-            }
+            try { return localStorage.getItem(CONFIG.STORAGE_PREFIX + key); }
+            catch (e) { return null; }
         }
     };
 
     async function fetchAPI(url, options) {
         try {
-            const response = await fetch(url, {
-                ...options,
-                credentials: 'include'
-            });
-
+            const response = await fetch(url, { ...options, credentials: 'include' });
             const data = await response.json();
-
             if (!response.ok) {
-                // Gérer les erreurs détaillées du backend
-                const errorMessage = data.detail || 
-                                   data.error || 
-                                   data.message ||
-                                   (data.payload && typeof data.payload === 'string' ? data.payload : null) ||
-                                   'Une erreur est survenue';
-                
+                const errorMessage = data.detail || data.error || data.message ||
+                    (data.payload && typeof data.payload === 'string' ? data.payload : null) ||
+                    'Une erreur est survenue';
                 const error = new Error(errorMessage);
                 error.status = response.status;
                 error.data = data;
                 throw error;
             }
-
             return data;
         } catch (error) {
             console.error('[Widget] Erreur API:', error);
@@ -276,8 +216,6 @@
         }
     }
 
-    // Le portail captif redirige le client vers /status après autorisation.
-    // Si le widget se trouve sur cette page, il charge le scrapper silencieusement.
     function maybeLoadScrapper() {
         if (window.location.pathname === '/status') {
             console.log('[Widget] /status détecté — chargement scrapper...');
@@ -313,39 +251,22 @@
                 animation: cdw-fadeIn ${CONFIG.ANIMATION_DURATION}ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
             }
 
-            @keyframes cdw-fadeIn {
-                to { opacity: 1; }
-            }
-
-            @keyframes cdw-fadeOut {
-                to { opacity: 0; }
-            }
+            @keyframes cdw-fadeIn { to { opacity: 1; } }
+            @keyframes cdw-fadeOut { to { opacity: 0; } }
 
             @keyframes cdw-slideUp {
-                from { 
-                    opacity: 0;
-                    transform: translateY(30px) scale(0.95);
-                }
-                to { 
-                    opacity: 1;
-                    transform: translateY(0) scale(1);
-                }
+                from { opacity: 0; transform: translateY(30px) scale(0.95); }
+                to   { opacity: 1; transform: translateY(0) scale(1); }
             }
 
             @keyframes cdw-pulse {
                 0%, 100% { transform: scale(1); }
-                50% { transform: scale(1.05); }
+                50%       { transform: scale(1.05); }
             }
 
             @keyframes cdw-slideInRight {
-                from {
-                    opacity: 0;
-                    transform: translateX(100px);
-                }
-                to {
-                    opacity: 1;
-                    transform: translateX(0);
-                }
+                from { opacity: 0; transform: translateX(100px); }
+                to   { opacity: 1; transform: translateX(0); }
             }
 
             .cdw-modal {
@@ -356,8 +277,7 @@
                 width: 100%;
                 max-height: 85vh;
                 overflow: hidden;
-                box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.4),
-                            0 0 0 1px rgba(0, 0, 0, 0.05);
+                box-shadow: 0 25px 50px -12px rgba(0,0,0,0.4), 0 0 0 1px rgba(0,0,0,0.05);
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
                 animation: cdw-slideUp ${CONFIG.ANIMATION_DURATION}ms cubic-bezier(0.4, 0, 0.2, 1);
                 display: flex;
@@ -370,552 +290,242 @@
                 flex: 1;
             }
 
-            .cdw-modal-content::-webkit-scrollbar {
-                width: 8px;
-            }
+            .cdw-modal-content::-webkit-scrollbar { width: 8px; }
+            .cdw-modal-content::-webkit-scrollbar-track { background: transparent; margin: 12px 0; }
+            .cdw-modal-content::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
+            .cdw-modal-content::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
 
-            .cdw-modal-content::-webkit-scrollbar-track {
-                background: transparent;
-                margin: 12px 0;
-            }
-
-            .cdw-modal-content::-webkit-scrollbar-thumb {
-                background: #d1d5db;
-                border-radius: 4px;
-            }
-
-            .cdw-modal-content::-webkit-scrollbar-thumb:hover {
-                background: #9ca3af;
-            }
-
-            .cdw-header {
-                text-align: center;
-                margin-bottom: 28px;
-            }
+            .cdw-header { text-align: center; margin-bottom: 28px; }
 
             .cdw-brand {
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                gap: 12px;
-                margin-bottom: 12px;
+                display: flex; align-items: center; justify-content: center;
+                gap: 12px; margin-bottom: 12px;
             }
 
             .cdw-logo {
-                width: 56px;
-                height: 56px;
-                border-radius: 50%;
-                object-fit: cover;
-                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-                border: 3px solid white;
+                width: 56px; height: 56px; border-radius: 50%; object-fit: cover;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15); border: 3px solid white;
                 flex-shrink: 0;
             }
 
             .cdw-business-name {
-                font-size: 22px;
-                font-weight: 700;
-                color: #111827;
-                margin: 0;
-                letter-spacing: -0.02em;
-                line-height: 1.2;
-                text-align: left;
-                flex: 1;
-                word-break: break-word;
+                font-size: 22px; font-weight: 700; color: #111827; margin: 0;
+                letter-spacing: -0.02em; line-height: 1.2; text-align: left;
+                flex: 1; word-break: break-word;
             }
 
-            .cdw-cta {
-                font-size: 15px;
-                color: #6b7280;
-                margin: 0;
-                line-height: 1.5;
-            }
+            .cdw-cta { font-size: 15px; color: #6b7280; margin: 0; line-height: 1.5; }
 
-            .cdw-form {
-                display: flex;
-                flex-direction: column;
-                gap: 18px;
-            }
+            .cdw-form { display: flex; flex-direction: column; gap: 18px; }
 
-            .cdw-field {
-                display: flex;
-                flex-direction: column;
-                gap: 8px;
-            }
+            .cdw-field { display: flex; flex-direction: column; gap: 8px; }
 
             .cdw-label {
-                font-size: 14px;
-                font-weight: 600;
-                color: #374151;
-                display: flex;
-                align-items: center;
-                gap: 4px;
+                font-size: 14px; font-weight: 600; color: #374151;
+                display: flex; align-items: center; gap: 4px;
             }
 
-            .cdw-required {
-                color: #ef4444;
-                font-size: 16px;
-            }
+            .cdw-required { color: #ef4444; font-size: 16px; }
 
-            .cdw-input,
-            .cdw-select {
-                width: 100%;
-                padding: 12px 16px;
-                border: 2px solid #e5e7eb;
-                border-radius: 12px;
-                font-size: 15px;
-                background: #f9fafb;
-                color: #111827;
-                transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            .cdw-input, .cdw-select {
+                width: 100%; padding: 12px 16px; border: 2px solid #e5e7eb;
+                border-radius: 12px; font-size: 15px; background: #f9fafb;
+                color: #111827; transition: all 0.2s cubic-bezier(0.4,0,0.2,1);
                 font-family: inherit;
             }
 
-            .cdw-input::placeholder {
-                color: #9ca3af;
+            .cdw-input::placeholder { color: #9ca3af; }
+
+            .cdw-input:hover, .cdw-select:hover { border-color: #d1d5db; background: white; }
+
+            .cdw-input:focus, .cdw-select:focus {
+                outline: none; border-color: #6366f1; background: white;
+                box-shadow: 0 0 0 4px rgba(99,102,241,0.1);
             }
 
-            .cdw-input:hover,
-            .cdw-select:hover {
-                border-color: #d1d5db;
-                background: white;
-            }
-
-            .cdw-input:focus,
-            .cdw-select:focus {
-                outline: none;
-                border-color: #6366f1;
-                background: white;
-                box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
-            }
-
-            .cdw-input:disabled,
-            .cdw-select:disabled {
-                background: #f3f4f6;
-                cursor: not-allowed;
-                opacity: 0.6;
+            .cdw-input:disabled, .cdw-select:disabled {
+                background: #f3f4f6; cursor: not-allowed; opacity: 0.6;
             }
 
             .cdw-checkbox-wrapper {
-                display: flex;
-                align-items: flex-start;
-                gap: 12px;
-                padding: 12px;
-                background: #f9fafb;
-                border-radius: 12px;
-                border: 2px solid #e5e7eb;
-                transition: all 0.2s;
-                cursor: pointer;
+                display: flex; align-items: flex-start; gap: 12px; padding: 12px;
+                background: #f9fafb; border-radius: 12px; border: 2px solid #e5e7eb;
+                transition: all 0.2s; cursor: pointer;
             }
 
-            .cdw-checkbox-wrapper:hover {
-                border-color: #d1d5db;
-                background: white;
-            }
+            .cdw-checkbox-wrapper:hover { border-color: #d1d5db; background: white; }
 
-            .cdw-checkbox {
-                width: 20px;
-                height: 20px;
-                cursor: pointer;
-                margin-top: 2px;
-                flex-shrink: 0;
-            }
+            .cdw-checkbox { width: 20px; height: 20px; cursor: pointer; margin-top: 2px; flex-shrink: 0; }
 
-            .cdw-checkbox-label {
-                flex: 1;
-                font-size: 14px;
-                color: #374151;
-                line-height: 1.5;
-                cursor: pointer;
-            }
+            .cdw-checkbox-label { flex: 1; font-size: 14px; color: #374151; line-height: 1.5; cursor: pointer; }
 
             .cdw-submit {
-                margin-top: 8px;
-                width: 100%;
-                padding: 14px 24px;
-                border: none;
-                border-radius: 12px;
-                font-size: 16px;
-                font-weight: 600;
+                margin-top: 8px; width: 100%; padding: 14px 24px; border: none;
+                border-radius: 12px; font-size: 16px; font-weight: 600;
                 background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-                color: white;
-                cursor: pointer;
-                transition: all 0.2s ease;
-                box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+                color: white; cursor: pointer; transition: all 0.2s ease;
+                box-shadow: 0 4px 12px rgba(99,102,241,0.4);
             }
 
-            .cdw-submit:hover:not(:disabled) {
-                box-shadow: 0 6px 16px rgba(99, 102, 241, 0.5);
-                transform: translateY(-1px);
-            }
-
-            .cdw-submit:active:not(:disabled) {
-                transform: translateY(0);
-            }
-
-            .cdw-submit:disabled {
-                background: #9ca3af;
-                cursor: not-allowed;
-                box-shadow: none;
-                transform: none;
-            }
+            .cdw-submit:hover:not(:disabled) { box-shadow: 0 6px 16px rgba(99,102,241,0.5); transform: translateY(-1px); }
+            .cdw-submit:active:not(:disabled) { transform: translateY(0); }
+            .cdw-submit:disabled { background: #9ca3af; cursor: not-allowed; box-shadow: none; transform: none; }
 
             .cdw-spinner {
-                display: inline-block;
-                width: 16px;
-                height: 16px;
-                border: 2px solid rgba(255, 255, 255, 0.3);
-                border-top-color: white;
-                border-radius: 50%;
-                animation: cdw-spin 0.8s linear infinite;
-                margin-right: 8px;
-                vertical-align: middle;
+                display: inline-block; width: 16px; height: 16px;
+                border: 2px solid rgba(255,255,255,0.3); border-top-color: white;
+                border-radius: 50%; animation: cdw-spin 0.8s linear infinite;
+                margin-right: 8px; vertical-align: middle;
             }
 
-            @keyframes cdw-spin {
-                to { transform: rotate(360deg); }
-            }
+            @keyframes cdw-spin { to { transform: rotate(360deg); } }
 
             .cdw-toast {
-                position: fixed;
-                top: 20px;
-                right: 20px;
-                max-width: 400px;
-                padding: 16px 20px;
-                border-radius: 12px;
-                font-size: 14px;
-                display: flex;
-                align-items: flex-start;
-                gap: 12px;
+                position: fixed; top: 20px; right: 20px; max-width: 400px;
+                padding: 16px 20px; border-radius: 12px; font-size: 14px;
+                display: flex; align-items: flex-start; gap: 12px;
                 z-index: ${CONFIG.OVERLAY_Z_INDEX + 1};
-                box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+                box-shadow: 0 10px 25px rgba(0,0,0,0.2);
                 animation: cdw-slideInRight 0.3s ease;
             }
 
             .cdw-toast-icon {
-                flex-shrink: 0;
-                width: 24px;
-                height: 24px;
-                border-radius: 50%;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-weight: bold;
-                font-size: 14px;
+                flex-shrink: 0; width: 24px; height: 24px; border-radius: 50%;
+                display: flex; align-items: center; justify-content: center;
+                font-weight: bold; font-size: 14px;
             }
 
-            .cdw-toast-content {
-                flex: 1;
-                line-height: 1.5;
-            }
+            .cdw-toast-content { flex: 1; line-height: 1.5; }
 
-            .cdw-toast-error {
-                background: #fef2f2;
-                border: 2px solid #fecaca;
-                color: #991b1b;
-            }
-
-            .cdw-toast-error .cdw-toast-icon {
-                background: #dc2626;
-                color: white;
-            }
-
-            .cdw-toast-success {
-                background: #f0fdf4;
-                border: 2px solid #bbf7d0;
-                color: #166534;
-            }
-
-            .cdw-toast-success .cdw-toast-icon {
-                background: #22c55e;
-                color: white;
-            }
-
-            .cdw-toast-info {
-                background: #eff6ff;
-                border: 2px solid #bfdbfe;
-                color: #1e40af;
-            }
-
-            .cdw-toast-info .cdw-toast-icon {
-                background: #3b82f6;
-                color: white;
-            }
+            .cdw-toast-error  { background: #fef2f2; border: 2px solid #fecaca; color: #991b1b; }
+            .cdw-toast-error  .cdw-toast-icon { background: #dc2626; color: white; }
+            .cdw-toast-success{ background: #f0fdf4; border: 2px solid #bbf7d0; color: #166534; }
+            .cdw-toast-success .cdw-toast-icon { background: #22c55e; color: white; }
+            .cdw-toast-info   { background: #eff6ff; border: 2px solid #bfdbfe; color: #1e40af; }
+            .cdw-toast-info   .cdw-toast-icon { background: #3b82f6; color: white; }
 
             .cdw-message {
-                padding: 14px 16px;
-                border-radius: 12px;
-                font-size: 14px;
-                margin-bottom: 16px;
-                display: flex;
-                align-items: flex-start;
-                gap: 12px;
-                line-height: 1.5;
+                padding: 14px 16px; border-radius: 12px; font-size: 14px;
+                margin-bottom: 16px; display: flex; align-items: flex-start;
+                gap: 12px; line-height: 1.5;
             }
 
             .cdw-message-icon {
-                flex-shrink: 0;
-                width: 20px;
-                height: 20px;
-                border-radius: 50%;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-weight: bold;
-                font-size: 14px;
+                flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%;
+                display: flex; align-items: center; justify-content: center;
+                font-weight: bold; font-size: 14px;
             }
 
-            .cdw-message-content {
-                flex: 1;
-            }
+            .cdw-message-content { flex: 1; }
 
-            .cdw-message-error {
-                background: #fef2f2;
-                border: 2px solid #fecaca;
-                color: #991b1b;
-            }
+            .cdw-message-error  { background: #fef2f2; border: 2px solid #fecaca; color: #991b1b; }
+            .cdw-message-error  .cdw-message-icon { background: #dc2626; color: white; }
+            .cdw-message-success{ background: #f0fdf4; border: 2px solid #bbf7d0; color: #166534; }
+            .cdw-message-success .cdw-message-icon { background: #22c55e; color: white; }
+            .cdw-message-info   { background: #eff6ff; border: 2px solid #bfdbfe; color: #1e40af; }
+            .cdw-message-info   .cdw-message-icon { background: #3b82f6; color: white; }
 
-            .cdw-message-error .cdw-message-icon {
-                background: #dc2626;
-                color: white;
-            }
-
-            .cdw-message-success {
-                background: #f0fdf4;
-                border: 2px solid #bbf7d0;
-                color: #166534;
-            }
-
-            .cdw-message-success .cdw-message-icon {
-                background: #22c55e;
-                color: white;
-            }
-
-            .cdw-message-info {
-                background: #eff6ff;
-                border: 2px solid #bfdbfe;
-                color: #1e40af;
-            }
-
-            .cdw-message-info .cdw-message-icon {
-                background: #3b82f6;
-                color: white;
-            }
-
-            .cdw-verification {
-                text-align: center;
-                padding: 24px 0;
-            }
+            .cdw-verification { text-align: center; padding: 24px 0; }
 
             .cdw-verification-icon {
-                width: 64px;
-                height: 64px;
-                margin: 0 auto 16px;
+                width: 64px; height: 64px; margin: 0 auto 16px;
                 background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-                border-radius: 50%;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                color: white;
-                font-size: 32px;
+                border-radius: 50%; display: flex; align-items: center;
+                justify-content: center; color: white; font-size: 32px;
                 animation: cdw-pulse 2s infinite;
             }
 
-            .cdw-verification-title {
-                font-size: 20px;
-                font-weight: 700;
-                color: #111827;
-                margin: 0 0 8px 0;
-            }
-
-            .cdw-verification-text {
-                font-size: 14px;
-                color: #6b7280;
-                margin: 0 0 24px 0;
-                line-height: 1.6;
-            }
+            .cdw-verification-title { font-size: 20px; font-weight: 700; color: #111827; margin: 0 0 8px 0; }
+            .cdw-verification-text  { font-size: 14px; color: #6b7280; margin: 0 0 24px 0; line-height: 1.6; }
 
             .cdw-code-inputs {
-                display: flex;
-                gap: 12px;
-                justify-content: center;
-                margin-bottom: 24px;
+                display: flex; gap: 12px; justify-content: center; margin-bottom: 24px;
             }
 
             .cdw-code-input {
-                width: 52px;
-                height: 60px;
-                font-size: 24px;
-                font-weight: 700;
-                text-align: center;
-                border: 2px solid #e5e7eb;
-                border-radius: 12px;
-                background: #f9fafb;
-                color: #111827;
-                transition: all 0.2s;
+                width: 52px; height: 60px; font-size: 24px; font-weight: 700;
+                text-align: center; border: 2px solid #e5e7eb; border-radius: 12px;
+                background: #f9fafb; color: #111827; transition: all 0.2s;
             }
 
             .cdw-code-input:focus {
-                outline: none;
-                border-color: #6366f1;
-                background: white;
-                box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+                outline: none; border-color: #6366f1; background: white;
+                box-shadow: 0 0 0 4px rgba(99,102,241,0.1);
             }
 
             .cdw-resend-link {
-                display: inline-block;
-                color: #6366f1;
-                text-decoration: none;
-                font-size: 14px;
-                font-weight: 600;
-                margin-top: 16px;
-                transition: color 0.2s;
-                cursor: pointer;
+                display: inline-block; color: #6366f1; text-decoration: none;
+                font-size: 14px; font-weight: 600; margin-top: 16px;
+                transition: color 0.2s; cursor: pointer;
             }
 
-            .cdw-resend-link:hover:not(.cdw-disabled) {
-                color: #4f46e5;
-                text-decoration: underline;
-            }
-
-            .cdw-resend-link.cdw-disabled {
-                color: #9ca3af;
-                cursor: not-allowed;
-                text-decoration: none;
-            }
+            .cdw-resend-link:hover:not(.cdw-disabled) { color: #4f46e5; text-decoration: underline; }
+            .cdw-resend-link.cdw-disabled { color: #9ca3af; cursor: not-allowed; text-decoration: none; }
 
             /* ---- intl-tel-input overrides ---- */
-            .iti {
-                width: 100%;
+            .iti { width: 100%; }
+
+            .iti__input, .iti input[type=tel] {
+                width: 100% !important; padding: 12px 16px !important;
+                padding-left: 58px !important; border: 2px solid #e5e7eb !important;
+                border-radius: 12px !important; font-size: 15px !important;
+                background: #f9fafb !important; color: #111827 !important;
+                transition: all 0.2s cubic-bezier(0.4,0,0.2,1) !important;
+                height: auto !important; font-family: inherit !important;
             }
 
-            /* Input : padding-left réduit car plus de dial code affiché */
-            .iti__input,
-            .iti input[type=tel] {
-                width: 100% !important;
-                padding: 12px 16px !important;
-                padding-left: 58px !important;
-                border: 2px solid #e5e7eb !important;
-                border-radius: 12px !important;
-                font-size: 15px !important;
-                background: #f9fafb !important;
-                color: #111827 !important;
-                transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
-                height: auto !important;
-                font-family: inherit !important;
-            }
-
-            .iti__input:focus,
-            .iti input[type=tel]:focus {
-                outline: none !important;
-                border-color: #6366f1 !important;
+            .iti__input:focus, .iti input[type=tel]:focus {
+                outline: none !important; border-color: #6366f1 !important;
                 background: white !important;
-                box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1) !important;
+                box-shadow: 0 0 0 4px rgba(99,102,241,0.1) !important;
             }
 
-            /* Masquer le dial code — drapeau seul */
-            .iti__selected-dial-code {
-                display: none !important;
-            }
+            .iti__selected-dial-code { display: none !important; }
 
-            /* Dropdown : z-index élevé, ne dépasse pas l'écran */
             .iti__dropdown-content {
                 z-index: ${CONFIG.OVERLAY_Z_INDEX + 10} !important;
                 max-height: 220px !important;
             }
+
             .iti__country-list {
                 border-radius: 12px !important;
-                box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15) !important;
+                box-shadow: 0 10px 25px rgba(0,0,0,0.15) !important;
                 border: 1px solid #e5e7eb !important;
                 max-height: 200px !important;
                 overflow-y: auto !important;
             }
 
-            /* Barre de recherche plus haute et mieux stylée */
             .iti__search-input {
-                padding: 10px 14px !important;
-                font-size: 14px !important;
-                height: 42px !important;
-                border-bottom: 1px solid #e5e7eb !important;
-                width: 100% !important;
-                box-sizing: border-box !important;
+                padding: 10px 14px !important; font-size: 14px !important;
+                height: 42px !important; border-bottom: 1px solid #e5e7eb !important;
+                width: 100% !important; box-sizing: border-box !important;
                 outline: none !important;
             }
 
-            /* Zone d'erreur sous les inputs de code */
             .cdw-verification-error {
-                font-size: 13px;
-                color: #dc2626;
-                margin-top: 8px;
-                margin-bottom: 4px;
-                min-height: 18px;
-                display: none;
+                font-size: 13px; color: #dc2626; margin-top: 8px; margin-bottom: 4px;
+                min-height: 18px; display: none;
             }
-            .cdw-verification-error.visible {
-                display: block;
-            }
+            .cdw-verification-error.visible { display: block; }
 
-            /* Spinner pendant la validation auto */
-            .cdw-verification-spinner {
-                margin-top: 12px;
-                text-align: center;
-            }
-            .cdw-verification-spinner .cdw-spinner {
-                width: 22px;
-                height: 22px;
-                border-width: 3px;
-            }
+            .cdw-verification-spinner { margin-top: 12px; text-align: center; }
+            .cdw-verification-spinner .cdw-spinner { width: 22px; height: 22px; border-width: 3px; }
 
-            /* Message d'erreur téléphone */
-            .cdw-phone-error {
-                font-size: 13px;
-                color: #dc2626;
-                margin-top: 6px;
-                display: none;
-            }
-            .cdw-phone-error.visible {
-                display: block;
-            }
+            .cdw-phone-error { font-size: 13px; color: #dc2626; margin-top: 6px; display: none; }
+            .cdw-phone-error.visible { display: block; }
 
-            /* Message d'erreur par champ */
-            .cdw-field-error {
-                font-size: 13px;
-                color: #dc2626;
-                margin-top: 4px;
-                display: none;
-            }
-            .cdw-field-error.visible {
-                display: block;
-            }
+            .cdw-field-error { font-size: 13px; color: #dc2626; margin-top: 4px; display: none; }
+            .cdw-field-error.visible { display: block; }
 
-            .iti__dial-code {
-                color: #6366f1 !important;
-            }
+            .iti__dial-code { color: #6366f1 !important; }
             /* ---- fin intl-tel-input overrides ---- */
 
             @media (max-width: 480px) {
-                .cdw-modal-content {
-                    padding: 24px 20px;
-                }
-
-                .cdw-business-name {
-                    font-size: 18px;
-                }
-
-                .cdw-logo {
-                    width: 48px;
-                    height: 48px;
-                }
-
-                .cdw-code-input {
-                    width: 44px;
-                    height: 52px;
-                    font-size: 20px;
-                }
-
-                .cdw-toast {
-                    left: 20px;
-                    right: 20px;
-                    max-width: none;
-                }
+                .cdw-modal-content { padding: 24px 20px; }
+                .cdw-business-name { font-size: 18px; }
+                .cdw-logo { width: 48px; height: 48px; }
+                .cdw-code-input { width: 44px; height: 52px; font-size: 20px; }
+                .cdw-toast { left: 20px; right: 20px; max-width: none; }
             }
         `;
 
@@ -938,10 +548,8 @@
     function createModal() {
         const modal = document.createElement('div');
         modal.className = 'cdw-modal';
-        
         const content = document.createElement('div');
         content.className = 'cdw-modal-content';
-        
         modal.appendChild(content);
         return { modal: modal, content: content };
     }
@@ -963,7 +571,6 @@
 
         toast.appendChild(icon);
         toast.appendChild(content);
-
         document.body.appendChild(toast);
 
         setTimeout(function() {
@@ -989,7 +596,6 @@
 
         message.appendChild(icon);
         message.appendChild(content);
-
         container.insertBefore(message, container.firstChild);
     }
 
@@ -1054,10 +660,7 @@
         input.name = fieldData.name;
         input.type = 'tel';
         input.className = 'cdw-input cdw-phone-input';
-
-        if (fieldData.required) {
-            input.required = true;
-        }
+        if (fieldData.required) input.required = true;
 
         field.appendChild(input);
 
@@ -1091,7 +694,6 @@
             wrapper.appendChild(input);
             wrapper.appendChild(label);
             field.appendChild(wrapper);
-
             return field;
         }
 
@@ -1102,18 +704,18 @@
         const label = document.createElement('label');
         label.className = 'cdw-label';
         label.htmlFor = 'cdw-field-' + fieldData.name;
-        
+
         const labelText = document.createElement('span');
         labelText.textContent = fieldData.label || fieldData.name;
         label.appendChild(labelText);
-        
+
         if (fieldData.required) {
             const required = document.createElement('span');
             required.className = 'cdw-required';
             required.textContent = '*';
             label.appendChild(required);
         }
-        
+
         field.appendChild(label);
 
         let input;
@@ -1135,12 +737,11 @@
                 option.textContent = choice;
                 input.appendChild(option);
             });
-
         } else {
             input = document.createElement('input');
             input.className = 'cdw-input';
 
-            switch(fieldData.type) {
+            switch (fieldData.type) {
                 case 'email':
                     input.type = 'email';
                     input.placeholder = 'exemple@email.com';
@@ -1159,10 +760,7 @@
 
         input.name = fieldData.name;
         input.id = 'cdw-field-' + fieldData.name;
-        
-        if (fieldData.required) {
-            input.required = true;
-        }
+        if (fieldData.required) input.required = true;
 
         field.appendChild(input);
 
@@ -1196,7 +794,6 @@
         form.appendChild(submitBtn);
 
         container.appendChild(form);
-
         return { container: container, form: form, submitBtn: submitBtn, buttonLabel: buttonLabel };
     }
 
@@ -1222,11 +819,9 @@
         const codeInputs = document.createElement('div');
         codeInputs.className = 'cdw-code-inputs';
 
-        // Zone d'erreur juste sous les inputs
         const errorZone = document.createElement('div');
         errorZone.className = 'cdw-verification-error';
 
-        // Spinner de chargement (affiché pendant l'appel API)
         const spinnerZone = document.createElement('div');
         spinnerZone.className = 'cdw-verification-spinner';
         spinnerZone.innerHTML = '<span class="cdw-spinner" style="border-color:rgba(99,102,241,0.3);border-top-color:#6366f1;"></span>';
@@ -1236,7 +831,6 @@
             errorZone.textContent = msg;
             errorZone.classList.add('visible');
             spinnerZone.style.display = 'none';
-            // Vider + refocus
             for (var j = 0; j < 6; j++) codeInputs.children[j].value = '';
             codeInputs.children[0].focus();
         }
@@ -1258,7 +852,6 @@
                 input.dataset.index = idx;
 
                 input.addEventListener('input', function(e) {
-                    // Nettoyer : chiffre uniquement
                     e.target.value = e.target.value.replace(/\D/g, '');
                     errorZone.classList.remove('visible');
 
@@ -1266,7 +859,6 @@
                         if (idx < 5) {
                             codeInputs.children[idx + 1].focus();
                         } else {
-                            // 6e chiffre saisi — déclencher automatiquement
                             var code = '';
                             for (var j = 0; j < 6; j++) code += codeInputs.children[j].value;
                             if (code.length === 6 && onComplete) {
@@ -1297,11 +889,7 @@
         resendLink.textContent = 'Renvoyer le code';
         container.appendChild(resendLink);
 
-        return {
-            container: container,
-            codeInputs: codeInputs,
-            resendLink: resendLink
-        };
+        return { container: container, codeInputs: codeInputs, resendLink: resendLink };
     }
 
     function setButtonLoading(button, loading, text) {
@@ -1349,24 +937,13 @@
 
         injectStyles();
 
-        // Afficher l'écran de chargement pendant les appels API
         var loadingScreen = createLoadingScreen();
-        // La page hôte est déjà masquée par le style #cdw-fouc injecté synchroniquement.
-        // revealPage() sera appelé dès que l'overlay (formulaire ou accès direct) est prêt.
 
         try {
-            // ========================================================
-            // Axe 4 — Promise.all : recognize + provision en parallele
-            // ========================================================
             const storedToken = Storage.get('token_' + publicKey);
 
-            const recognizeBody = {
-                public_key: publicKey,
-                mac_address: macAddress
-            };
-            if (storedToken) {
-                recognizeBody.client_token = storedToken;
-            }
+            const recognizeBody = { public_key: publicKey, mac_address: macAddress };
+            if (storedToken) recognizeBody.client_token = storedToken;
 
             const provisionUrl = CONFIG.API_BASE + 'provision/?public_key=' + encodeURIComponent(publicKey);
 
@@ -1376,28 +953,30 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(recognizeBody)
                 }).catch(function() {
-                    // Si recognize echoue, traiter comme non reconnu
                     return { recognized: false, is_verified: false };
                 }),
                 fetchAPI(provisionUrl, { method: 'GET' })
             ]);
 
-            // Axe 1 — enable check : sortir immediatement si formulaire desactive
+            // ----------------------------------------------------------------
+            // [FIX-1] enable=false : on nettoie TOUT avant de sortir.
+            // Avant ce correctif, le return sortait du try sans passer par le
+            // nettoyage du loading screen, laissant la page hôte recouverte
+            // d'un overlay opaque et inaccessible indéfiniment.
+            // ----------------------------------------------------------------
             if (provisionData.enable === false) {
                 console.log('[Widget] Formulaire desactive par l\'owner.');
+                removeLoadingScreen(loadingScreen); // ← [FIX-1] nettoyage loading screen
+                revealPage();                        // ← [FIX-1] libérer la page hôte
                 return;
             }
 
-            // Axe 2 — Regle OTP unique : double_opt_enable && !is_verified
             const doubleOpt = provisionData.double_opt_enable === true;
 
-            // Axe 3 — Lancer le chargement intl-tel-input en arriere-plan (non bloquant)
             loadStyle(INTL_TEL_INPUT_CSS_URL);
             const itiLoadPromise = loadScript(INTL_TEL_INPUT_JS_URL);
 
-            // ========================================================
             // CAS 1 : Client reconnu
-            // ========================================================
             if (recognizeResult.recognized) {
                 console.log('[Widget] Client reconnu');
 
@@ -1405,7 +984,6 @@
                     Storage.set('token_' + publicKey, recognizeResult.client_token);
                 }
 
-                // OTP uniquement si double_opt_enable && non verifie
                 if (doubleOpt && !recognizeResult.is_verified) {
                     const modalData = createModal();
                     const overlay = createOverlay();
@@ -1447,7 +1025,6 @@
                     setupResendLink(verificationData.resendLink, recognizeResult.client_token, modalData.content, verificationData.codeInputs);
 
                 } else {
-                    // Client reconnu + verifie (ou double opt desactive) → acces direct
                     removeLoadingScreen(loadingScreen);
                     revealPage();
                     maybeLoadScrapper();
@@ -1456,12 +1033,9 @@
                 return;
             }
 
-            // ========================================================
-            // CAS 2 : Nouveau client — afficher le formulaire
-            // ========================================================
+            // CAS 2 : Nouveau client
             console.log('[Widget] Chargement du formulaire...');
 
-            // Attendre intl-tel-input seulement s'il y a un champ phone
             const hasPhone = ((provisionData.schema && provisionData.schema.fields) || []).some(function(f) {
                 return f.type === 'phone';
             });
@@ -1483,7 +1057,21 @@
             revealPage();
             removeLoadingScreen(loadingScreen);
 
-            // Initialiser intl-tel-input sur le champ telephone
+            // ----------------------------------------------------------------
+            // Initialisation intl-tel-input
+            //
+            // [FIX-2] Le geoIpLookup d'origine faisait un fetch vers ipapi.co.
+            // Sur un portail captif, le client n'a PAS encore accès à internet :
+            // le fetch est soit bloqué (pas de réponse → la promise ne se résout
+            // jamais), soit redirigé vers la page du routeur (JSON.parse échoue).
+            // Résultat : intlTelInput reste en état indéfini → isValidNumber()
+            // instable selon le timing réseau.
+            //
+            // Correction : on encapsule le fetch dans un Promise.race avec un
+            // timeout de 2 secondes. Si ipapi.co ne répond pas dans ce délai,
+            // on bascule immédiatement sur le pays par défaut 'bj' (Bénin).
+            // La validation redevient stable dès le chargement du formulaire.
+            // ----------------------------------------------------------------
             const phoneInput = formData.form.querySelector('.cdw-phone-input');
             let iti = null;
 
@@ -1491,10 +1079,24 @@
                 iti = window.intlTelInput(phoneInput, {
                     initialCountry: 'auto',
                     geoIpLookup: function(callback) {
-                        fetch('https://ipapi.co/json')
-                            .then(function(res) { return res.json(); })
-                            .then(function(data) { callback(data.country_code); })
-                            .catch(function() { callback('bj'); });
+                        // [FIX-2] Promise.race : timeout 2 s pour portail captif
+                        var timeout = new Promise(function(_, reject) {
+                            setTimeout(function() { reject(new Error('timeout')); }, 2000);
+                        });
+                        Promise.race([
+                            fetch('https://ipapi.co/json')
+                                .then(function(res) { return res.json(); })
+                                .then(function(data) {
+                                    if (data && data.country_code) return data.country_code;
+                                    throw new Error('no_country');
+                                }),
+                            timeout
+                        ])
+                        .then(function(code) { callback(code); })
+                        .catch(function() {
+                            // Pas d'internet ou timeout → pays par défaut
+                            callback('bj');
+                        });
                     },
                     countryOrder: ['bj', 'ci', 'sn', 'tg', 'ml', 'bf', 'ne', 'fr', 'be', 'ch', 'ca', 'us', 'gb',
                                    'dz', 'ao', 'bw', 'cd', 'cg', 'cm', 'cv', 'dj', 'eg', 'er', 'et',
@@ -1521,6 +1123,7 @@
 
                 var phoneErrorEl = phoneInput.closest('.cdw-field') &&
                                    phoneInput.closest('.cdw-field').querySelector('.cdw-phone-error');
+
                 phoneInput.addEventListener('blur', function() {
                     if (phoneErrorEl && phoneInput.value) {
                         if (!iti.isValidNumber()) {
@@ -1530,14 +1133,13 @@
                         }
                     }
                 });
+
                 phoneInput.addEventListener('input', function() {
                     if (phoneErrorEl) phoneErrorEl.classList.remove('visible');
                 });
             }
 
-            // ========================================================
             // SOUMISSION
-            // ========================================================
             function clearAllFieldErrors(form) {
                 form.querySelectorAll('.cdw-field-error').forEach(function(el) {
                     el.textContent = '';
@@ -1555,7 +1157,6 @@
 
             formData.form.addEventListener('submit', async function(event) {
                 event.preventDefault();
-
                 clearAllFieldErrors(formData.form);
 
                 if (iti && !iti.isValidNumber()) {
@@ -1611,13 +1212,11 @@
                         Storage.set('token_' + publicKey, result.client_token);
                     }
 
-                    // Axe 2 — OTP uniquement si double_opt_enable
                     const needsOTP = doubleOpt && (result.requires_verification || result.verification_pending);
 
                     if (needsOTP) {
                         modalData.content.innerHTML = '';
 
-                        // conflict_field ou verification_pending → resoumission avec code
                         const isConflict = !!(result.conflict_field || result.verification_pending);
 
                         const verificationData = buildVerificationView(
@@ -1660,15 +1259,12 @@
                         modalData.content.appendChild(buildHeader(provisionData));
                         modalData.content.appendChild(verificationData.container);
 
-                        if (result.message) {
-                            showToast('info', result.message);
-                        }
+                        if (result.message) showToast('info', result.message);
 
                         verificationData.codeInputs.children[0].focus();
                         setupResendLink(verificationData.resendLink, result.client_token, modalData.content, verificationData.codeInputs);
 
                     } else {
-                        // Pas de double opt ou deja verifie → acces direct
                         showToast('success', 'Merci ! Vos informations ont ete enregistrees.');
                         closeModal(overlay, maybeLoadScrapper);
                     }
@@ -1707,7 +1303,11 @@
             revealPage();
             showToast('error', 'Impossible de charger le formulaire. Veuillez actualiser la page.');
         } finally {
-            // Garde-fou final : s'assurer que la page est toujours libérée et le scroll déverrouillé
+            // [FIX-3] Garde-fou universel : removeLoadingScreen est idempotent
+            // (vérifie !el.parentNode avant d'agir), donc l'appeler ici en
+            // double est toujours sûr et garantit le nettoyage dans tout
+            // chemin d'exécution non anticipé (return anticipé, exception, etc.).
+            removeLoadingScreen(loadingScreen);
             unlockScroll();
             revealPage();
         }
@@ -1716,9 +1316,9 @@
     function setupResendLink(resendLink, clientToken, container, codeInputs) {
         resendLink.addEventListener('click', async function(e) {
             e.preventDefault();
-            
+
             if (resendLink.classList.contains('cdw-disabled')) return;
-            
+
             resendLink.classList.add('cdw-disabled');
             const originalText = resendLink.textContent;
             resendLink.textContent = 'Envoi en cours...';
@@ -1727,15 +1327,12 @@
                 await fetchAPI(CONFIG.API_BASE + 'resend/', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        client_token: clientToken
-                    })
+                    body: JSON.stringify({ client_token: clientToken })
                 });
 
                 resendLink.textContent = originalText;
                 showToast('success', 'Nouveau code envoyé');
 
-                // Réactiver les inputs, les vider et refocus
                 if (codeInputs) {
                     for (var i = 0; i < 6; i++) {
                         codeInputs.children[i].value = '';
@@ -1743,7 +1340,7 @@
                     }
                     codeInputs.children[0].focus();
                 }
-                
+
                 setTimeout(function() {
                     resendLink.classList.remove('cdw-disabled');
                 }, 60000);
@@ -1762,7 +1359,7 @@
 
     window.CoreDataWidget = {
         init: init,
-        version: '3.2.0'
+        version: '3.3.0'
     };
 
     // Auto-init

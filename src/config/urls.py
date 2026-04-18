@@ -26,5 +26,3 @@ if settings.DEBUG:
     # Pour servir les fichiers médias (uploads utilisateurs) pendant le développement
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
     
-    # Pour rendre le simulateur de widget accessible à la racine
-    urlpatterns.append(path('', include('simulator.urls')))

@@ -32,7 +32,6 @@ INSTALLED_APPS = [
     'drf_yasg',
     'accounts',
     'core_data',
-    'simulator',
 ]
 
 MIDDLEWARE = [
