@@ -1,19 +1,6 @@
 /**
  * WiFi Marketing Widget v3.3.0
  * Collecte de leads avec double opt-in
- *
- * CORRECTIONS v3.3.0 :
- *   [FIX-1] enable=false : removeLoadingScreen + revealPage avant le return
- *           pour ne jamais laisser la page hôte bloquée par le loading screen.
- *   [FIX-2] geoIpLookup encapsulé dans un Promise.race avec timeout 2 s :
- *           sur portail captif (pas d'internet), ipapi.co est inaccessible ou
- *           redirigé vers la page du routeur. Sans timeout, la résolution de pays
- *           n'arrive jamais → intlTelInput reste dans un état indéfini → iti.isValidNumber()
- *           retourne des résultats instables. Avec le timeout, on bascule proprement
- *           sur le pays par défaut 'bj' en moins de 2 secondes.
- *   [FIX-3] removeLoadingScreen ajouté dans le finally pour nettoyage garanti
- *           dans tout chemin d'exécution non prévu.
- *
  * @license MIT
  */
 
@@ -137,9 +124,24 @@
         return match ? decodeURIComponent(match[1]) : null;
     }
 
+    // ============================================================================
+    // NOUVELLE FONCTION getCurrentScript() (seule modification apportée)
+    // ============================================================================
     function getCurrentScript() {
-        return document.currentScript ||
-               document.getElementsByTagName('script')[document.getElementsByTagName('script').length - 1];
+        // 1. Méthode native la plus rapide (fonctionne pendant l'exécution synchrone)
+        if (document.currentScript) {
+            return document.currentScript;
+        }
+
+        // 2. Méthode la plus fiable : on cherche par l'attribut data-public-key
+        const widgetScript = document.querySelector('script[data-public-key]');
+        if (widgetScript) {
+            return widgetScript;
+        }
+
+        // Si on arrive ici → il y a vraiment un problème (script mal configuré)
+        console.warn('[Widget] Impossible de détecter le script du widget. Vérifiez la présence de data-public-key.');
+        return null;
     }
 
     function isValidMAC(value) {
@@ -958,16 +960,10 @@
                 fetchAPI(provisionUrl, { method: 'GET' })
             ]);
 
-            // ----------------------------------------------------------------
-            // [FIX-1] enable=false : on nettoie TOUT avant de sortir.
-            // Avant ce correctif, le return sortait du try sans passer par le
-            // nettoyage du loading screen, laissant la page hôte recouverte
-            // d'un overlay opaque et inaccessible indéfiniment.
-            // ----------------------------------------------------------------
             if (provisionData.enable === false) {
                 console.log('[Widget] Formulaire desactive par l\'owner.');
-                removeLoadingScreen(loadingScreen); // ← [FIX-1] nettoyage loading screen
-                revealPage();                        // ← [FIX-1] libérer la page hôte
+                removeLoadingScreen(loadingScreen);
+                revealPage();
                 return;
             }
 
@@ -976,7 +972,6 @@
             loadStyle(INTL_TEL_INPUT_CSS_URL);
             const itiLoadPromise = loadScript(INTL_TEL_INPUT_JS_URL);
 
-            // CAS 1 : Client reconnu
             if (recognizeResult.recognized) {
                 console.log('[Widget] Client reconnu');
 
@@ -1033,7 +1028,6 @@
                 return;
             }
 
-            // CAS 2 : Nouveau client
             console.log('[Widget] Chargement du formulaire...');
 
             const hasPhone = ((provisionData.schema && provisionData.schema.fields) || []).some(function(f) {
@@ -1057,21 +1051,6 @@
             revealPage();
             removeLoadingScreen(loadingScreen);
 
-            // ----------------------------------------------------------------
-            // Initialisation intl-tel-input
-            //
-            // [FIX-2] Le geoIpLookup d'origine faisait un fetch vers ipapi.co.
-            // Sur un portail captif, le client n'a PAS encore accès à internet :
-            // le fetch est soit bloqué (pas de réponse → la promise ne se résout
-            // jamais), soit redirigé vers la page du routeur (JSON.parse échoue).
-            // Résultat : intlTelInput reste en état indéfini → isValidNumber()
-            // instable selon le timing réseau.
-            //
-            // Correction : on encapsule le fetch dans un Promise.race avec un
-            // timeout de 2 secondes. Si ipapi.co ne répond pas dans ce délai,
-            // on bascule immédiatement sur le pays par défaut 'bj' (Bénin).
-            // La validation redevient stable dès le chargement du formulaire.
-            // ----------------------------------------------------------------
             const phoneInput = formData.form.querySelector('.cdw-phone-input');
             let iti = null;
 
@@ -1079,7 +1058,6 @@
                 iti = window.intlTelInput(phoneInput, {
                     initialCountry: 'auto',
                     geoIpLookup: function(callback) {
-                        // [FIX-2] Promise.race : timeout 2 s pour portail captif
                         var timeout = new Promise(function(_, reject) {
                             setTimeout(function() { reject(new Error('timeout')); }, 2000);
                         });
@@ -1094,7 +1072,6 @@
                         ])
                         .then(function(code) { callback(code); })
                         .catch(function() {
-                            // Pas d'internet ou timeout → pays par défaut
                             callback('bj');
                         });
                     },
@@ -1139,7 +1116,6 @@
                 });
             }
 
-            // SOUMISSION
             function clearAllFieldErrors(form) {
                 form.querySelectorAll('.cdw-field-error').forEach(function(el) {
                     el.textContent = '';
@@ -1303,10 +1279,6 @@
             revealPage();
             showToast('error', 'Impossible de charger le formulaire. Veuillez actualiser la page.');
         } finally {
-            // [FIX-3] Garde-fou universel : removeLoadingScreen est idempotent
-            // (vérifie !el.parentNode avant d'agir), donc l'appeler ici en
-            // double est toujours sûr et garantit le nettoyage dans tout
-            // chemin d'exécution non anticipé (return anticipé, exception, etc.).
             removeLoadingScreen(loadingScreen);
             unlockScroll();
             revealPage();
