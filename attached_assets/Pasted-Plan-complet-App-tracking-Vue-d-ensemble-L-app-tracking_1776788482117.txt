@@ -1,0 +1,52 @@
+Plan complet — App tracking
+
+Vue d'ensemble
+L'app tracking est la couche qui enregistre ce que fait un client après que le widget a terminé son travail. Le widget sait qui est le client. Le tracker sait comment il utilise le réseau. Les deux ensemble donnent à l'owner une vision complète de son activité WiFi, de l'identité du client jusqu'à ses habitudes de consommation.
+L'app repose sur deux mécanismes natifs de MikroTik qu'on exploite intelligemment sans rien inventer. Le premier est la substitution de variables côté serveur : MikroTik remplace des marqueurs comme $(uptime) ou $(bytes-in) par les vraies valeurs avant d'envoyer la page au navigateur, donc les données arrivent déjà propres sans parsing. Le second est le refresh automatique de status.html toutes les N secondes, qui joue le rôle de système de polling sans qu'on ait à écrire une seule ligne de setInterval.
+
+Ce que l'owner installe
+L'owner reçoit dans son dashboard deux snippets distincts et clairement expliqués.
+Le premier snippet est celui qui existe déjà, à coller dans login.html. Il s'agit du widget.min.js qui collecte les leads. Rien ne change ici.
+Le second snippet est nouveau, à coller dans status.html et logout.html. Il référence tracker.js et contient toutes les variables MikroTik dans des attributs data-*. L'owner fait un simple copier-coller dans les deux fichiers, exactement comme il l'a fait pour le widget. Il ajoute également le domaine backend dans son Walled Garden, ce qui est déjà documenté dans la doc d'intégration existante.
+La raison pour laquelle le même snippet va dans deux fichiers est simple. Sur status.html, tracker.js comprend qu'il doit envoyer un heartbeat avec les données de la session en cours. Sur logout.html, il comprend qu'il doit signaler la fin de session. Le même fichier, deux comportements selon la page, détecté automatiquement depuis l'URL.
+
+Les données de session MikroTik disponibles
+Sur status.html et logout.html, MikroTik met à disposition les variables suivantes qui seront injectées dans les attributs data-* du snippet.
+L'adresse MAC du client, qui sert à faire le lien avec le OwnerClient déjà enregistré par le widget. L'adresse IP locale attribuée par le routeur. Le temps de connexion cumulé depuis que le ticket a été activé, exprimé dans le format MikroTik comme 1h23m45s. Le volume de données téléchargées et le volume envoyé, tous les deux en bytes bruts. Les limites du ticket en download et upload si elles existent, sinon la valeur --- pour illimité. Le code ticket ou nom d'utilisateur utilisé pour cette connexion. Un identifiant de session interne à MikroTik. Et enfin l'intervalle de refresh en secondes.
+
+La gestion des prix de tickets
+Les prix des tickets sont affichés dans login.html côté owner, mais ils sont définis et gérés par l'owner lui-même dans MikroTik. La bonne approche est de ne pas essayer de scraper ce qui est dans le HTML, mais de laisser l'owner déclarer ses plans tarifaires directement dans son dashboard WiFiLeads.
+Dans le dashboard, l'owner crée ses plans tarifaires. Chaque plan a un nom comme "4 heures" ou "1 jour", un prix en FCFA, une durée en minutes, et des limites de données optionnelles en mégaoctets. Ces informations sont stockées dans un modèle TicketPlan lié à l'owner.
+La correspondance entre une session et un plan tarifaire se fait automatiquement via les limites du ticket. Quand MikroTik envoie $(rx-limit) et $(tx-limit) via le tracker, le backend compare ces valeurs aux limites définies dans les plans de l'owner et identifie le plan correspondant. Si les limites sont --- (illimité), on utilise la durée de session pour faire la correspondance. C'est automatique, sans que le client ou l'owner ne fasse quoi que ce soit de plus.
+
+Le modèle de données central : ConnectionSession
+Une session représente une connexion WiFi unique, c'est-à-dire l'utilisation d'un ticket par un client. Le même client peut avoir autant de sessions qu'il achète de tickets.
+Chaque session contient obligatoirement la référence vers l'owner et la référence vers le OwnerClient correspondant. Cette dernière n'est pas nullable, car le widget garantit l'existence du client avant toute connexion possible. La page login.html est invisible tant que le widget n'a pas terminé son enregistrement, et MikroTik ne peut accorder l'accès qu'après que l'utilisateur ait saisi son code ticket sur cette page déjà débloquée. L'ordre est inviolable.
+La session contient également les données réseau issues de MikroTik, une clé unique qui permet d'enchaîner les heartbeats successifs sans créer de doublons, les métriques de consommation mises à jour à chaque heartbeat, la référence optionnelle vers le plan tarifaire si la correspondance a pu être faite, le statut actif ou terminé, et les horodatages précis.
+Le modèle inclut aussi deux champs utilitaires. Une propriété calculée qui retourne la durée totale de la session en secondes et en format lisible. Et une propriété qui retourne la consommation totale en mégaoctets.
+
+Le comportement de tracker.js
+Le fichier est servi comme statique par Django depuis /static/tracking/tracker.js avec une URL absolue dans le snippet pour fonctionner depuis n'importe quel routeur.
+Au chargement, il lit sa propre balise script pour récupérer toutes les données MikroTik déjà substituées dans les attributs data-*. Il n'a rien à parser, rien à chercher dans le DOM.
+Il détermine sur quelle page il se trouve. Sur status.html, il récupère d'abord la clé de session dans le localStorage du navigateur si elle existe, puis envoie un heartbeat au backend avec toutes les données de session. Le backend lui répond avec la clé de session qu'il stocke en localStorage pour les prochains heartbeats. Sur logout.html, il récupère la clé de session en localStorage, envoie un signal de fermeture via navigator.sendBeacon() pour garantir que l'envoi survit à la navigation, puis supprime la clé du localStorage.
+Le choix de navigator.sendBeacon() pour le logout est délibéré. Un fetch() classique est annulé quand la page se ferme ou navigue. sendBeacon() est le seul mécanisme fiable pour envoyer des données lors d'une fermeture de page.
+
+Les endpoints backend
+Trois endpoints publics pour le tracker, et un endpoint authentifié pour le dashboard owner.
+Le premier endpoint reçoit les heartbeats. Il valide les données, identifie l'owner via la public_key, crée ou met à jour la session, tente la correspondance avec un plan tarifaire, et retourne la session_key.
+Le second endpoint reçoit les signaux de fin de session. Il marque la session comme terminée avec l'heure exacte de fermeture.
+Le troisième endpoint permet à l'owner de gérer ses plans tarifaires depuis le dashboard, avec les opérations classiques de création, lecture, mise à jour et suppression.
+Le quatrième endpoint est authentifié et retourne les analytics de session pour le dashboard owner, avec les statistiques agrégées et l'historique.
+
+La gestion des sessions orphelines
+Certaines sessions se terminent sans passer par logout.html. Téléphone éteint, perte de réseau, ticket expiré côté MikroTik sans déclenchement de logout. Dans ces cas, le tracker ne peut pas envoyer de signal.
+MikroTik rafraîchissant status.html toutes les 30 à 120 secondes, une session qui ne reçoit plus de heartbeat depuis 10 minutes est une session terminée. Une tâche Celery s'exécute toutes les 5 minutes pour détecter ces sessions et les fermer avec une heure de fin approximative.
+
+Ce que l'owner voit dans son dashboard
+Les données de session alimentent une nouvelle section dans les analytics. L'owner peut voir le nombre de connexions par période, la durée moyenne des sessions, le volume de données consommées, l'identification des clients les plus actifs avec leur historique de connexions, la répartition des connexions par heure de la journée pour identifier les heures de pointe, et si les plans tarifaires sont configurés, une vue des revenus estimés par période.
+
+Flux complet de bout en bout
+Un nouveau client arrive sur le réseau WiFi. MikroTik le redirige vers login.html. Le widget.min.js se charge et bloque la page, enregistre le client dans OwnerClient, puis libère la page. Le client voit le portail et entre son code ticket. MikroTik valide le ticket et redirige vers status.html. MikroTik substitue toutes ses variables dans le snippet tracker.js. tracker.js se charge, lit les données et envoie le premier heartbeat. Le backend crée la session et retourne la session_key. MikroTik rafraîchit status.html toutes les N secondes, chaque rechargement envoie un heartbeat avec les données fraîches, le backend met à jour la session. Quand le client se déconnecte, logout.html se charge, tracker.js envoie le signal de fermeture via sendBeacon(), le backend ferme la session avec l'heure exacte. Si la déconnexion est involontaire, Celery détecte l'absence de heartbeat au bout de 10 minutes et ferme la session automatiquement.
+
+Ordre d'implémentation
+L'implémentation se fait en six séquences logiques. D'abord les modèles TicketPlan et ConnectionSession avec leurs migrations. Ensuite les fonctions utilitaires de parsing des formats MikroTik. Puis les services métier qui contiennent toute la logique de création, mise à jour et fermeture des sessions. Après ça les serializers et les endpoints API. Ensuite tracker.js et sa mise en place comme fichier statique. Et enfin les tâches Celery et l'ajout des nouvelles routes dans api/v1.py.
