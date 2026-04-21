@@ -106,7 +106,12 @@ def _apply_heartbeat(session, data):
     except (TypeError, ValueError):
         session.bytes_uploaded = 0
     session.is_active = True
-    session.last_raw_data = data
+    # JSONField n'accepte pas les UUID/datetime issus de la validation DRF :
+    # on stringifie tout ce qui n'est pas natif JSON.
+    session.last_raw_data = {
+        k: (str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v)
+        for k, v in data.items()
+    }
     session.save()
 
 

@@ -31,6 +31,16 @@ Marchés cibles :
 
 ---
 
+## Tracking app — Statut
+
+- Modèles : `TicketPlan`, `ConnectionSession` (avec `session_key`, `last_heartbeat`, `ticket_plan` FK).
+- Services : `handle_heartbeat` (création/update + matching plan), `close_session`, `close_stale_sessions`.
+- Tâche périodique Celery : `tracking.cleanup_stale_sessions` toutes les 5 min (`CELERY_BEAT_SCHEDULE` dans `config/base.py`).
+- Endpoints publics : `/api/v1/tracking/heartbeat/`, `/api/v1/tracking/end/`.
+- Endpoints owner authentifiés : `/api/v1/ticket-plans/`, `/api/v1/sessions/`, `/api/v1/session-analytics/{overview,by-day,by-hour,top-clients}/`.
+- Admin : gestion complète plans (actions activer/désactiver) et sessions (force close + export CSV).
+- Tests : **72 tests verts** couvrant parsers, modèles, services, tâche Celery et tous les endpoints.
+
 ## Choix technique — Mobile Money
 
 **Décision : FedaPay en principal, KkiaPay en fallback / pay-as-you-go.**
