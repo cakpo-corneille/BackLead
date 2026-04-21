@@ -101,3 +101,4 @@ redis
 requests
 sentry_sdk
 whitenoise
+google-genai

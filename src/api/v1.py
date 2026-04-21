@@ -13,6 +13,7 @@ from tracking.views import (
     SessionAnalyticsViewSet,
     ConnectionSessionViewSet,
 )
+from assistant.views import AssistantViewSet, ChatConversationViewSet
 
 
 class OptionalSlashRouter(routers.DefaultRouter):
@@ -44,6 +45,10 @@ router.register(r'tracking', TrackingViewSet, basename='tracking')
 router.register(r'ticket-plans', TicketPlanViewSet, basename='ticket-plans')
 router.register(r'sessions', ConnectionSessionViewSet, basename='sessions')
 router.register(r'session-analytics', SessionAnalyticsViewSet, basename='session-analytics')
+
+# Assistant IA (Gemini via Replit AI Integrations)
+router.register(r'assistant', AssistantViewSet, basename='assistant')
+router.register(r'assistant/conversations', ChatConversationViewSet, basename='conversations')
 
 
 urlpatterns = router.urls

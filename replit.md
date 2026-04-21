@@ -41,6 +41,19 @@ Marchés cibles :
 - Admin : gestion complète plans (actions activer/désactiver) et sessions (force close + export CSV).
 - Tests : **72 tests verts** couvrant parsers, modèles, services, tâche Celery et tous les endpoints.
 
+## Assistant IA (Gemini) — Statut
+
+- App `assistant` ajoutée à `INSTALLED_APPS`. Migration `0001_initial` appliquée.
+- Intégration : Replit AI Integrations (`python_gemini_ai_integrations`) — pas de clé API à fournir, facturation via crédits Replit. Variables `AI_INTEGRATIONS_GEMINI_API_KEY` et `AI_INTEGRATIONS_GEMINI_BASE_URL` injectées automatiquement.
+- Modèles : `ChatConversation`, `ChatMessage` (historique persisté par owner).
+- Modèle Gemini par défaut : `gemini-2.5-flash` (max 8192 tokens).
+- Endpoints :
+  - `POST /api/v1/assistant/chat/` — agent conversationnel (crée/poursuit une conversation).
+  - `POST /api/v1/assistant/generate-form/` — génère un schéma JSON compatible `FormSchema.schema` à partir d'un prompt.
+  - `GET/DELETE /api/v1/assistant/conversations/[id]/` — gestion de l'historique.
+- Sécurité : isolation par owner, fallback texte si l'API Gemini tombe.
+- Tests : 25 tests verts (mocks sur `gemini_client.generate_text`).
+
 ## Choix technique — Mobile Money
 
 **Décision : FedaPay en principal, KkiaPay en fallback / pay-as-you-go.**

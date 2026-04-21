@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     'accounts',
     'core_data',
     'tracking',
+    'assistant',
 ]
 
 MIDDLEWARE = [
