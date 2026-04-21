@@ -1,4 +1,5 @@
 # tracking/models.py
+import re
 import uuid
 from django.db import models
 from django.contrib.auth import get_user_model
@@ -12,7 +13,6 @@ def parse_mikrotik_uptime(s):
     Convertit '1d2h34m56s' en secondes.
     MikroTik omet les unités nulles : '5m12s', '2h3s' sont valides.
     """
-    import re
     total = 0
     for val, unit in re.findall(r'(\d+)([dhms])', s or ''):
         multipliers = {'d': 86400, 'h': 3600, 'm': 60, 's': 1}
@@ -29,15 +29,64 @@ def parse_mikrotik_limit(s):
         return None
     s = s.strip().upper()
     if s.endswith('G'):
-        return int(float(s[:-1]) * 1024**3)
+        return int(float(s[:-1]) * 1024 ** 3)
     if s.endswith('M'):
-        return int(float(s[:-1]) * 1024**2)
+        return int(float(s[:-1]) * 1024 ** 2)
     if s.endswith('K'):
         return int(float(s[:-1]) * 1024)
     try:
         return int(s)
     except ValueError:
         return None
+
+
+class TicketPlan(models.Model):
+    """
+    Plan tarifaire déclaré par l'owner depuis son dashboard.
+    Sert de référence pour identifier automatiquement quel plan
+    correspond à une session MikroTik via les rx-limit / tx-limit
+    (ou la durée si limites = illimitées).
+    """
+    owner = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='ticket_plans'
+    )
+    name = models.CharField(max_length=100)
+    price_fcfa = models.PositiveIntegerField(help_text="Prix du ticket en FCFA")
+    duration_minutes = models.PositiveIntegerField(
+        help_text="Durée de validité du ticket en minutes"
+    )
+    download_limit_mb = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Limite download en MB. Vide = illimité."
+    )
+    upload_limit_mb = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Limite upload en MB. Vide = illimité."
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['owner', 'price_fcfa']
+        indexes = [
+            models.Index(fields=['owner', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.price_fcfa} FCFA)"
+
+    @property
+    def download_limit_bytes(self):
+        if self.download_limit_mb is None:
+            return None
+        return self.download_limit_mb * 1024 * 1024
+
+    @property
+    def upload_limit_bytes(self):
+        if self.upload_limit_mb is None:
+            return None
+        return self.upload_limit_mb * 1024 * 1024
 
 
 class ConnectionSession(models.Model):
@@ -52,9 +101,13 @@ class ConnectionSession(models.Model):
         User, on_delete=models.CASCADE,
         related_name='tracking_sessions'
     )
-    # Relation obligatoire
     client = models.ForeignKey(
         OwnerClient, on_delete=models.CASCADE, related_name='sessions'
+    )
+    ticket_plan = models.ForeignKey(
+        TicketPlan, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='sessions',
+        help_text="Plan correspondant identifié automatiquement"
     )
 
     # Identifiants réseau (depuis les data-* attributes MikroTik)
@@ -98,6 +151,20 @@ class ConnectionSession(models.Model):
         if self.ended_at:
             return int((self.ended_at - self.started_at).total_seconds())
         return self.uptime_seconds
+
+    @property
+    def duration_human(self):
+        """Format lisible : '1h 23m 45s'."""
+        total = self.duration_seconds
+        h, rem = divmod(total, 3600)
+        m, s = divmod(rem, 60)
+        parts = []
+        if h:
+            parts.append(f"{h}h")
+        if m:
+            parts.append(f"{m}m")
+        parts.append(f"{s}s")
+        return " ".join(parts)
 
     @property
     def total_mb(self):

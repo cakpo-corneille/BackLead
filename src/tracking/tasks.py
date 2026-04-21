@@ -1,7 +1,7 @@
 # tracking/tasks.py
-from celery import shared_task
 import logging
-from .services import close_stale_sessions, reconcile_orphan_sessions
+from celery import shared_task
+from .services import close_stale_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -11,17 +11,11 @@ def cleanup_stale_sessions_task():
     """
     Ferme les sessions sans heartbeat depuis plus de 10 minutes.
     MikroTik refresh toutes les ~60s → 10 min = déconnexion certaine.
+
+    L'heure de fin est positionnée à la date du dernier heartbeat reçu
+    (approximation au plus juste).
     """
     count = close_stale_sessions(threshold_minutes=10)
     if count:
-        logger.info(f"[tracking] {count} sessions orphelines fermées")
+        logger.info("[tracking] %d sessions orphelines fermées", count)
     return count
-
-
-@shared_task(name='tracking.reconcile_sessions')
-def reconcile_sessions_task():
-    """
-    Rattache les sessions sans client (race condition widget/tracker).
-    Exécuté fréquemment pour combler la fenêtre de quelques secondes.
-    """
-    return reconcile_orphan_sessions()

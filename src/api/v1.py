@@ -7,6 +7,12 @@ from core_data.views import (
     LeadViewSet,
     ConflictAlertViewSet
 )
+from tracking.views import (
+    TrackingViewSet,
+    TicketPlanViewSet,
+    SessionAnalyticsViewSet,
+    ConnectionSessionViewSet,
+)
 
 
 class OptionalSlashRouter(routers.DefaultRouter):
@@ -30,6 +36,14 @@ router.register(r'schema', FormSchemaViewSet, basename='schema')
 
 # Core Data - Public portal
 router.register(r'portal', PortalViewSet, basename='portal')
+
+# Tracking - Public (tracker.js : status.html / logout.html)
+router.register(r'tracking', TrackingViewSet, basename='tracking')
+
+# Tracking - Dashboard owner (authentifié)
+router.register(r'ticket-plans', TicketPlanViewSet, basename='ticket-plans')
+router.register(r'sessions', ConnectionSessionViewSet, basename='sessions')
+router.register(r'session-analytics', SessionAnalyticsViewSet, basename='session-analytics')
 
 
 urlpatterns = router.urls
