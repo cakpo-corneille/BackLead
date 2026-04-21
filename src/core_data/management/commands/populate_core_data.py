@@ -208,7 +208,7 @@ class Command(BaseCommand):
                     'title': schema_data['title'],
                     'description': schema_data['description'],
                     'button_label': schema_data['button_label'],
-                    'double_opt_enable': random.choice([True, False, False]),  # 1/3 de chance d'activer
+                    'opt': random.choice([True, False, False]),  # 1/3 de chance d'activer
                     'enable': True,
                 }
             )

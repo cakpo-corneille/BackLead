@@ -102,7 +102,7 @@ def provision(public_key: str, request=None) -> Dict[str, Any]:
         {
             'schema': {...},
             'owner': {'name': str, 'logo_url': str},
-            'double_opt_enable': bool,
+            'opt': bool,
             'enable': bool,
             'title': str,
             'description': str,
@@ -122,7 +122,7 @@ def provision(public_key: str, request=None) -> Dict[str, Any]:
     return {
         'schema': form_schema.schema,
         'owner': owner_info,
-        'double_opt_enable': form_schema.double_opt_enable,
+        'opt': form_schema.opt,
         'enable': form_schema.enable,
         'title': form_schema.title,
         'description': form_schema.description,
@@ -199,19 +199,26 @@ def ingest(
             phone=phone_val,
             form_schema=form_schema
         )
-    
     # 4️⃣ CAS B : Client reconnu par contact (email ou phone)
     elif detection['exists'] and detection['conflict_field']:
-        if not form_schema.double_opt_enable:
-            result = _create_new_client(
-                form_schema=form_schema,
-                mac_address=mac_address,
-                payload=payload,
-                email=email_val,
-                phone=phone_val,
-                client_token=client_token
-            )
-        else:
+        # ⚠️ CRÉER UNE ALERTE DE CONFLIT
+        from core_data.models import ConflictAlert
+        alert, created = ConflictAlert.objects.get_or_create(
+            owner=form_schema.owner,
+            existing_client=detection['client'],
+            conflict_field=detection['conflict_field'],
+            offending_payload=payload,
+            offending_mac=mac_address,
+            status='PENDING'
+        )
+
+        # Envoyer une notification WhatsApp à l'owner (si nouvelle alerte)
+        if created:
+            from config.utils.sender import notify_conflict_alert
+            notify_conflict_alert(alert)
+
+        # Déterminer la réaction selon la stratégie du propriétaire
+        if form_schema.conflict_strategy == 'REQUIRE_OTP' and form_schema.opt:
             result = _handle_contact_conflict(
                 client=detection['client'],
                 mac_address=mac_address,
@@ -221,6 +228,17 @@ def ingest(
                 conflict_field=detection['conflict_field'],
                 verification_code=verification_code,
                 form_schema=form_schema
+            )
+        else:
+            # Stratégie 'ALLOW' ou OPT désactivé : on laisse passer
+            # en créant un nouveau lead (ou en mettant à jour, mais ici on suit le Cas C)
+            result = _create_new_client(
+                form_schema=form_schema,
+                mac_address=mac_address,
+                payload=payload,
+                email=email_val,
+                phone=phone_val,
+                client_token=client_token
             )
     
     # 5️⃣ CAS C : Nouveau client

@@ -42,9 +42,21 @@ class FormSchema(DirtyFieldsMixin, models.Model):
         help_text="Version du schéma, augmente uniquement lors de changements structurels."
     )
 
-    double_opt_enable = models.BooleanField(
+    opt = models.BooleanField(
         default=False,
-        help_text="Activer le double opt-in pour SMS."
+        help_text="Activer la vérification OTP par SMS."
+    )
+
+    CONFLICT_STRATEGY_CHOICES = [
+        ('ALLOW', 'Laisser passer (Log uniquement)'),
+        ('REQUIRE_OTP', 'Exiger une vérification OTP'),
+    ]
+
+    conflict_strategy = models.CharField(
+        max_length=20,
+        choices=CONFLICT_STRATEGY_CHOICES,
+        default='ALLOW',
+        help_text="Action à entreprendre lorsqu'un email ou téléphone est déjà utilisé par un autre appareil."
     )
 
     title = models.CharField(
@@ -168,3 +180,45 @@ class OwnerClient(models.Model):
 
     def __str__(self):
         return f"{self.mac_address} - {self.owner.email}"
+
+
+class ConflictAlert(models.Model):
+    """
+    Historique des conflits détectés lors de la soumission du portail.
+    """
+    STATUS_CHOICES = [
+        ('PENDING', 'En attente'),
+        ('RESOLVED', 'Résolu'),
+        ('IGNORED', 'Ignoré'),
+    ]
+
+    owner = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='conflict_alerts'
+    )
+    existing_client = models.ForeignKey(
+        OwnerClient,
+        on_delete=models.CASCADE,
+        related_name='conflicts'
+    )
+    conflict_field = models.CharField(
+        max_length=10,
+        choices=[('email', 'Email'), ('phone', 'Téléphone')]
+    )
+    offending_payload = models.JSONField()
+    offending_mac = models.CharField(max_length=17)
+    
+    status = models.CharField(
+        max_length=10,
+        choices=STATUS_CHOICES,
+        default='PENDING'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Conflit {self.conflict_field} - {self.owner.email} ({self.created_at})"
+

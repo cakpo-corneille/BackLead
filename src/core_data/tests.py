@@ -5,10 +5,10 @@ from django.core.cache import cache
 from django.utils import timezone
 from datetime import timedelta
 from rest_framework.test import APIClient
-from .models import FormSchema, OwnerClient
-from .services.portal.portal_services import ingest, recognize
-from .services.portal.messages_services import send_verification_code, verify_code
-from .services.dashboard.analytics import analytics_summary
+from core_data.models import FormSchema, OwnerClient
+from core_data.services.portal.portal_services import ingest, recognize
+from core_data.services.portal.messages_services import send_verification_code, verify_code
+from core_data.services.dashboard.analytics import analytics_summary
 from unittest.mock import patch, Mock
 from config.utils.sms_backend import (
     ConsoleSMSBackend,
@@ -144,7 +144,7 @@ class PortalAPITest(TestCase):
         self.assertIn('description', response.data)
         self.assertIn('button_label', response.data)
         self.assertIn('logo_url', response.data)
-        self.assertIn('double_opt_enable', response.data)
+        self.assertIn('opt', response.data)
         self.assertEqual(response.data['title'], self.schema.title)
         self.assertEqual(response.data['description'], self.schema.description)
         self.assertEqual(response.data['button_label'], self.schema.button_label)
@@ -192,7 +192,7 @@ class PortalAPITest(TestCase):
     
     def test_submit_new_lead_valid(self):
         """Soumettre un nouveau lead valide → 201."""
-        self.schema.double_opt_enable = False
+        self.schema.opt = False
         self.schema.save()
         
         response = self.client.post('/api/v1/portal/submit/', {
@@ -245,7 +245,7 @@ class PortalAPITest(TestCase):
     
     def test_submit_duplicate_mac(self):
         """Re-soumission même MAC → mise à jour."""
-        self.schema.double_opt_enable = False
+        self.schema.opt = False
         self.schema.save()
         
         self.client.post('/api/v1/portal/submit/', {
@@ -395,7 +395,8 @@ class DoubleOptInTest(TestCase):
         self.client = APIClient()
         self.user = User.objects.create_user(email='test@example.com', password='testpass123')
         self.schema = FormSchema.objects.get(owner=self.user)
-        self.schema.double_opt_enable = True
+        self.schema.opt = True
+        self.schema.conflict_strategy = 'REQUIRE_OTP'
         self.schema.enable = True
         # On s'assure que le schéma a bien le téléphone (obligatoire si DOI ON pour envoyer SMS)
         # Mais l'email est totalement optionnel
@@ -473,8 +474,9 @@ class DoubleOptInTest(TestCase):
         self.assertTrue(self.lead.is_verified)
 
     def test_portal_submit_duplicate_email_success(self):
-        """L'email identique sur un autre appareil ne doit plus bloquer (on ignore l'email)."""
-        self.schema.double_opt_enable = True
+        """L'email identique sur un autre appareil ne doit plus bloquer si la stratégie est ALLOW."""
+        self.schema.opt = True
+        self.schema.conflict_strategy = 'ALLOW'
         # On ajoute l'email au schéma pour qu'il soit collecté
         self.schema.schema = {
             "fields": [
@@ -506,13 +508,13 @@ class DoubleOptInTest(TestCase):
             }
         }, format='json')
         
-        # Doit créer un nouveau lead (201) au lieu de bloquer
+        # Doit créer un nouveau lead (201) car stratégie ALLOW
         self.assertEqual(response.status_code, 201)
         self.assertEqual(OwnerClient.objects.filter(email='duplicate@test.com').count(), 2)
 
     def test_portal_submit_conflict_only_on_phone(self):
         """Seul le téléphone déclenche un conflit et un OTP."""
-        self.schema.double_opt_enable = True
+        self.schema.opt = True
         self.schema.save()
         
         # self.lead (+2290197000000) existe déjà
@@ -588,19 +590,6 @@ class DashboardAPITest(TestCase):
         }, format='json')
         
         self.assertEqual(response.status_code, 400)
-    
-    def test_update_schema_missing_email_or_phone(self):
-        """Schéma sans email ni phone → 400."""
-        invalid_schema = {
-            'fields': [
-                {'name': 'nom', 'label': 'Nom', 'type': 'text', 'required': True}
-            ]
-        }
-        response = self.client.post('/api/v1/schema/update-schema/', {
-            'schema': invalid_schema
-        }, format='json')
-        
-        self.assertEqual(response.status_code, 400)
 
     def test_enable_double_opt_without_phone_fails(self):
         """Activer le double opt-in sans champ téléphone doit échouer (400)."""
@@ -611,11 +600,11 @@ class DashboardAPITest(TestCase):
         }
         response = self.client.post('/api/v1/schema/update-schema/', {
             'schema': schema_without_phone,
-            'double_opt_enable': True
+            'opt': True
         }, format='json')
         
         self.assertEqual(response.status_code, 400)
-        self.assertIn('double_opt_enable', response.data)
+        self.assertIn('opt', response.data)
     
     def test_rotate_key(self):
         """POST /rotate-key/ génère une nouvelle clé."""
@@ -864,3 +853,187 @@ class AnalyticsSummaryTest(TestCase):
         expected_rate = 70.0
         
         self.assertEqual(data['return_rate'], expected_rate)
+
+
+class ConflictManagementTest(TestCase):
+    """Tests de la gestion des conflits et des alertes."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(email='test@example.com', password='testpass123')
+        self.schema = FormSchema.objects.get(owner=self.user)
+        self.schema.opt = True
+        self.schema.conflict_strategy = 'ALLOW'
+        self.schema.schema = {
+            "fields": [
+                {"name": "nom", "label": "Nom", "type": "text", "required": True},
+                {"name": "email", "label": "Email", "type": "email", "required": True},
+                {"name": "phone", "label": "Téléphone", "type": "phone", "required": True},
+            ]
+        }
+        self.schema.save()
+        self.public_key = str(self.schema.public_key)
+
+        # Créer un client existant
+        self.existing_client = OwnerClient.objects.create(
+            owner=self.user,
+            mac_address='11:11:11:11:11:11',
+            email='existing@test.com',
+            phone='+2290197000000',
+            payload={'nom': 'Existing User'}
+        )
+
+    def test_conflict_alert_created_on_email_conflict(self):
+        """Un conflit d'email crée une ConflictAlert même en stratégie ALLOW."""
+        from core_data.models import ConflictAlert
+        
+        response = self.client.post('/api/v1/portal/submit/', {
+            'public_key': self.public_key,
+            'mac_address': '22:22:22:22:22:22',
+            'payload': {
+                'nom': 'New User',
+                'email': 'existing@test.com',
+                'phone': '+2290198000000'
+            }
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(ConflictAlert.objects.count(), 1)
+        alert = ConflictAlert.objects.first()
+        self.assertEqual(alert.conflict_field, 'email')
+        self.assertEqual(alert.offending_mac, '22:22:22:22:22:22')
+
+    def test_conflict_require_otp_strategy(self):
+        """La stratégie REQUIRE_OTP déclenche un OTP en cas de conflit d'email."""
+        self.schema.conflict_strategy = 'REQUIRE_OTP'
+        self.schema.save()
+
+        response = self.client.post('/api/v1/portal/submit/', {
+            'public_key': self.public_key,
+            'mac_address': '22:22:22:22:22:22',
+            'payload': {
+                'nom': 'New User',
+                'email': 'existing@test.com',
+                'phone': '+2290198000000'
+            }
+        }, format='json')
+
+        self.assertEqual(response.status_code, 202)
+        self.assertTrue(response.data['verification_pending'])
+        self.assertEqual(response.data['conflict_field'], 'email')
+        self.assertIn('code de vérification a été envoyé par SMS', response.data['message'])
+
+    def test_no_conflict_if_field_not_required(self):
+        """Pas de conflit si le champ n'est pas obligatoire dans le schéma."""
+        from core_data.models import ConflictAlert
+        self.schema.schema = {
+            "fields": [
+                {"name": "nom", "label": "Nom", "type": "text", "required": True},
+                {"name": "email", "label": "Email", "type": "email", "required": False}, # OPTIONNEL
+                {"name": "phone", "label": "Téléphone", "type": "phone", "required": True},
+            ]
+        }
+        self.schema.save()
+
+        response = self.client.post('/api/v1/portal/submit/', {
+            'public_key': self.public_key,
+            'mac_address': '22:22:22:22:22:22',
+            'payload': {
+                'nom': 'New User',
+                'email': 'existing@test.com',
+                'phone': '+2290198000000'
+            }
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(ConflictAlert.objects.count(), 0)
+
+    def test_get_alerts_dashboard(self):
+        """Le propriétaire peut voir ses alertes via l'API dashboard."""
+        from core_data.models import ConflictAlert
+        ConflictAlert.objects.create(
+            owner=self.user,
+            existing_client=self.existing_client,
+            conflict_field='phone',
+            offending_payload={'nom': 'Scammer'},
+            offending_mac='33:33:33:33:33:33',
+            status='PENDING'
+        )
+
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get('/api/v1/alerts/')
+        self.assertEqual(response.status_code, 200)
+
+        # Gérer le cas où c'est une liste ou un objet paginé
+        results = response.data['results'] if isinstance(response.data, dict) else response.data
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['conflict_field'], 'phone')
+        self.assertEqual(results[0]['status'], 'PENDING')
+
+    def test_resolve_alert_on_otp_success(self):
+        """Vérifie que l'alerte passe à RESOLVED après une vérification OTP réussie."""
+        from core_data.models import ConflictAlert
+        from core_data.services.portal.verification_services import verify_client_code
+        
+        # 1. Créer une alerte PENDING
+        alert = ConflictAlert.objects.create(
+            owner=self.user,
+            existing_client=self.existing_client,
+            conflict_field='phone',
+            offending_payload={'nom': 'Scammer'},
+            offending_mac='33:33:33:33:33:33',
+            status='PENDING'
+        )
+
+        # 2. Simuler l'envoi d'un code OTP pour le client existant
+        from core_data.services.portal.messages_services import send_verification_code
+        send_verification_code(self.existing_client)
+        cache_key = f"double_opt_{self.existing_client.client_token}"
+        code = cache.get(cache_key)
+
+        # 3. Vérifier le code via notre fonction qui automatise la résolution
+        success, _ = verify_client_code(self.existing_client, code)
+        
+        # 4. Confirmer
+        self.assertTrue(success)
+        alert.refresh_from_db()
+        self.assertEqual(alert.status, 'RESOLVED')
+
+
+    def test_ignore_alert(self):
+        """Le propriétaire peut ignorer une alerte."""
+        from core_data.models import ConflictAlert
+        alert = ConflictAlert.objects.create(
+            owner=self.user,
+            existing_client=self.existing_client,
+            conflict_field='phone',
+            offending_payload={'nom': 'Scammer'},
+            offending_mac='33:33:33:33:33:33',
+            status='PENDING'
+        )
+
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post(f'/api/v1/alerts/{alert.id}/ignore/')
+        self.assertEqual(response.status_code, 200)
+        alert.refresh_from_db()
+        self.assertEqual(alert.status, 'IGNORED')
+
+    @patch('config.utils.sender._send_whatsapp_alert_sync')
+    def test_whatsapp_notification_triggered(self, mock_whatsapp):
+        """La notification WhatsApp est déclenchée lors d'un conflit."""
+        # Configurer l'owner avec un contact WhatsApp
+        profile = self.user.profile
+        profile.whatsapp_contact = '+22997000000'
+        profile.save()
+
+        self.client.post('/api/v1/portal/submit/', {
+            'public_key': self.public_key,
+            'mac_address': '22:22:22:22:22:22',
+            'payload': {
+                'nom': 'New User',
+                'email': 'existing@test.com',
+                'phone': '+2290198000000'
+            }
+        }, format='json')
+
+        self.assertTrue(mock_whatsapp.called)

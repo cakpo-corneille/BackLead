@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 import uuid
 
 
@@ -79,8 +79,27 @@ def detect_existing_client(
                 'is_verified': client.is_verified
             }
     
-    # 3️⃣ Vérification par phone (conflit potentiel)
-    if phone:
+    # 3️⃣ Vérification par email (conflit potentiel uniquement si requis)
+    email_required = any(f.get('required') for f in form_schema.schema.get('fields', []) if f.get('type') == 'email')
+    if email and email_required:
+        client = OwnerClient.objects.filter(
+            owner=form_schema.owner,
+            email=email
+        ).first()
+        
+        if client:
+            return {
+                'exists': True,
+                'client': client,
+                'method': 'email',
+                'conflict_field': 'email',
+                'is_verified': client.is_verified
+            }
+    
+    # 4️⃣ Vérification par phone (conflit potentiel uniquement si requis)
+    phone_types = ('phone', 'tel', 'whatsapp')
+    phone_required = any(f.get('required') for f in form_schema.schema.get('fields', []) if f.get('type') in phone_types)
+    if phone and phone_required:
         client = OwnerClient.objects.filter(
             owner=form_schema.owner,
             phone=phone
@@ -95,7 +114,7 @@ def detect_existing_client(
                 'is_verified': client.is_verified
             }
     
-    # 4️⃣ Client non trouvé
+    # 5️⃣ Client non trouvé
     return {
         'exists': False,
         'client': None,
@@ -104,6 +123,27 @@ def detect_existing_client(
         'is_verified': False
     }
 
+
+
+def verify_client_code(client: OwnerClient, code: str) -> Tuple[bool, str]:
+    """
+    Vérifie le code OTP et résout les alertes en attente si succès.
+    """
+    from .messages_services import verify_code
+    success, error_msg = verify_code(client, code)
+    
+    if success:
+        client.is_verified = True
+        client.save()
+        
+        # ✅ Résoudre automatiquement les alertes de conflit liées à ce client
+        from core_data.models import ConflictAlert
+        ConflictAlert.objects.filter(
+            existing_client=client,
+            status='PENDING'
+        ).update(status='RESOLVED')
+        
+    return success, error_msg
 
 
 def _handle_device_recognition(
@@ -126,7 +166,7 @@ def _handle_device_recognition(
     client.save()
     
     # Double opt-in si activé et non vérifié
-    requires_verification = form_schema.double_opt_enable and not client.is_verified
+    requires_verification = form_schema.opt and not client.is_verified
     
     if requires_verification:
         send_code_async_or_sync(client)
@@ -160,6 +200,7 @@ def _handle_contact_conflict(
     if not verification_code:
         send_code_async_or_sync(client)
         
+        field_label = "email" if conflict_field == 'email' else "numéro de téléphone"
         return {
             'created': False,
             'duplicate': True,
@@ -167,7 +208,7 @@ def _handle_contact_conflict(
             'requires_verification': False,
             'verification_pending': True,
             'conflict_field': conflict_field,
-            'message': 'Ce numéro de téléphone est déjà associé à un autre appareil. Un code de vérification a été envoyé par SMS.'
+            'message': f'Cet {field_label} est déjà associé à un autre appareil. Un code de vérification a été envoyé par SMS sur le numéro lié à ce compte pour confirmer votre identité.'
         }
     
     # B) Code fourni → vérifier
@@ -231,7 +272,7 @@ def _create_new_client(
     )
     
     # Double opt-in si activé
-    requires_verification = form_schema.double_opt_enable
+    requires_verification = form_schema.opt
     
     if requires_verification:
         send_code_async_or_sync(client)

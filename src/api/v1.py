@@ -1,6 +1,12 @@
 from rest_framework import routers
 from accounts.views import AuthViewSet, ProfileViewSet
-from core_data.views import AnalyticsViewSet, FormSchemaViewSet, PortalViewSet, LeadViewSet
+from core_data.views import (
+    AnalyticsViewSet, 
+    FormSchemaViewSet, 
+    PortalViewSet, 
+    LeadViewSet,
+    ConflictAlertViewSet
+)
 
 
 class OptionalSlashRouter(routers.DefaultRouter):
@@ -18,6 +24,7 @@ router.register(r'accounts/profile', ProfileViewSet, basename='profile')
 
 # Core Data
 router.register(r'leads', LeadViewSet, basename='leads')
+router.register(r'alerts', ConflictAlertViewSet, basename='alerts')
 router.register(r'analytics', AnalyticsViewSet, basename='analytics')
 router.register(r'schema', FormSchemaViewSet, basename='schema')
 

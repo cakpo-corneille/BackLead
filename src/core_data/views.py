@@ -14,7 +14,7 @@ from django.core.cache import cache
 from django.shortcuts import get_object_or_404
 from .validators import validate_schema_format
 
-from .models import FormSchema, OwnerClient
+from .models import FormSchema, OwnerClient, ConflictAlert
 from .serializers import (
     DoubleOptInSerializer,
     FormSchemaPublicSerializer,
@@ -23,11 +23,13 @@ from .serializers import (
     RecognitionSerializer,
     ResendDoubleOptInSerializer,
     SubmissionSerializer,
+    ConflictAlertSerializer
 )
 
 from core_data.services.dashboard.analytics import  analytics_summary # type: ignore
 from core_data.services.portal.portal_services import provision, recognize, ingest  # type: ignore
-from core_data.services.portal.messages_services import resend_verification_code, verify_code # type: ignore
+from core_data.services.portal.messages_services import resend_verification_code # type: ignore
+from core_data.services.portal.verification_services import verify_client_code # type: ignore
 from .decorators import ratelimit_public_api
 
 from .filters import LeadFilter
@@ -142,6 +144,33 @@ class AnalyticsViewSet(viewsets.ViewSet):
         """Récupère les statistiques compactes avec cache Redis."""
         data = analytics_summary(request.user.id)
         return Response(data)
+
+
+class ConflictAlertViewSet(viewsets.ReadOnlyModelViewSet, mixins.UpdateModelMixin):
+    """
+    Gestion des alertes de conflits (Dashboard).
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = ConflictAlertSerializer
+
+    def get_queryset(self):
+        return ConflictAlert.objects.filter(owner=self.request.user)
+
+    @action(detail=True, methods=['post'])
+    def resolve(self, request, pk=None):
+        """Marque une alerte comme résolue."""
+        alert = self.get_object()
+        alert.status = 'RESOLVED'
+        alert.save()
+        return Response({'status': 'Alerte marquée comme résolue.', 'current_status': alert.status})
+
+    @action(detail=True, methods=['post'])
+    def ignore(self, request, pk=None):
+        """Marque une alerte comme ignorée."""
+        alert = self.get_object()
+        alert.status = 'IGNORED'
+        alert.save()
+        return Response({'status': 'Alerte ignorée.', 'current_status': alert.status})
 
 
 class PortalViewSet(viewsets.ViewSet):
@@ -294,15 +323,12 @@ class PortalViewSet(viewsets.ViewSet):
         except OwnerClient.DoesNotExist:
             return Response({"detail": "Client non trouvé"}, status=404)
 
-
-        success, error_msg = verify_code(client, str(code_input))
+        # Utilisation de verify_client_code qui gère aussi la résolution automatique des alertes
+        success, error_msg = verify_client_code(client, str(code_input))
         if not success:
             return Response({"ok": False, "detail": error_msg}, status=400)
         
-        # Marquer email/phone comme vérifié
-        client.is_verified = True
-        client.save()
-        return Response({"ok": True, "message": "Double opt-in confirmé"})
+        return Response({"ok": True, "message": "Double opt-in confirmé et alertes résolues"})
 
 
 

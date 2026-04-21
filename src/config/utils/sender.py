@@ -25,3 +25,46 @@ def send_code_async_or_sync(client):
             f"envoi synchrone pour client {client.client_token}"
         )
         send_verification_code(client)
+
+
+def notify_conflict_alert(alert):
+    """
+    Notifie le propriétaire d'un conflit détecté via WhatsApp.
+    Utilise Celery si disponible.
+    """
+    from config.celery_utils import has_active_celery_workers
+    from core_data.tasks import send_whatsapp_alert_task
+    
+    # Récupérer le numéro WhatsApp de l'owner depuis son profil
+    owner_profile = getattr(alert.owner, 'profile', None)
+    if not owner_profile or not owner_profile.whatsapp_contact:
+        logger.warning(f"Impossible de notifier l'owner {alert.owner.id} : Pas de contact WhatsApp.")
+        return False
+
+    if has_active_celery_workers(app=send_whatsapp_alert_task.app):
+        send_whatsapp_alert_task.delay(alert.id)
+        logger.info(f"Alerte WhatsApp envoyée à Celery pour l'alerte {alert.id}")
+    else:
+        # Synchrone
+        _send_whatsapp_alert_sync(alert)
+
+
+def _send_whatsapp_alert_sync(alert):
+    """Logique synchrone d'envoi WhatsApp."""
+    owner_profile = alert.owner.profile
+    whatsapp_number = owner_profile.whatsapp_contact
+    
+    business_name = owner_profile.business_name or "Votre WIFI-ZONE"
+    client_name = alert.existing_client.payload.get('nom', 'un client existant')
+    
+    message = (
+        f"🚨 *Alerte Conflit - {business_name}*\n\n"
+        f"Un utilisateur tente d'utiliser les coordonnées de *{client_name}* ({alert.conflict_field}) "
+        f"sur un nouvel appareil (MAC: {alert.offending_mac}).\n\n"
+        f"⚠️ Action requise sur votre dashboard."
+    )
+    
+    # Pour l'instant on utilise le SMS backend comme proxy ou une console dédiée
+    from config.utils.sms_backend import get_sms_backend
+    backend = get_sms_backend()
+    return backend.send(whatsapp_number, message)

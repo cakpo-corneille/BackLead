@@ -42,7 +42,7 @@ def create_default_form_schema(sender, instance, created, **kwargs):
                     ]
                 },
                 "enable": True,
-                "double_opt_enable": False,
+                "opt": False,
                 "version": 0,
             }
         )

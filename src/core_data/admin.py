@@ -28,12 +28,12 @@ class FormSchemaAdmin(admin.ModelAdmin):
         'public_key_short',
         'enable',
         'version',
-        'double_opt_enable',
+        'opt',
         'created_at'
     )
     
     search_fields = ('owner__email', 'public_key')
-    list_filter = ('enable', 'double_opt_enable', 'created_at')
+    list_filter = ('enable', 'opt', 'created_at')
     readonly_fields = ('public_key', 'version', 'created_at', 'updated_at')
     actions = ['rotate_public_key_action']
     # L'action de suppression est ajoutée par défaut par Django sauf si on la désactive explicitement.
@@ -54,7 +54,7 @@ class FormSchemaAdmin(admin.ModelAdmin):
             'description': 'Public key for widget integration (read-only)'
         }),
         ('Settings', {
-            'fields': ('double_opt_enable',),
+            'fields': ('opt',),
             'description': 'Advanced form submission settings'
         }),
         ('Timestamps', {

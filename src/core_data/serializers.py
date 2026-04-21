@@ -3,7 +3,7 @@ from django.core.validators import RegexValidator
 from django.conf import settings
 from urllib.parse import urljoin
 
-from .models import FormSchema, OwnerClient
+from .models import FormSchema, OwnerClient, ConflictAlert
 
 
 # ============================================================================
@@ -33,7 +33,8 @@ class FormSchemaSerializer(serializers.ModelSerializer):
             'integration_snippet',
             'created_at', 'updated_at',
             'version',
-            'double_opt_enable',
+            'opt',
+            'conflict_strategy',
             'title', 'description', 'logo', 'logo_url', 'button_label',
             'media_host',
         )
@@ -86,8 +87,8 @@ class FormSchemaSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, data):
-        """Validation croisee entre double_opt_enable et le contenu du schema."""
-        double_opt = data.get('double_opt_enable', getattr(self.instance, 'double_opt_enable', False))
+        """Validation croisee entre opt et le contenu du schema."""
+        double_opt = data.get('opt', getattr(self.instance, 'opt', False))
         schema = data.get('schema', getattr(self.instance, 'schema', {}))
 
         if double_opt:
@@ -95,7 +96,7 @@ class FormSchemaSerializer(serializers.ModelSerializer):
             has_phone = any(f.get('type') == 'phone' for f in fields)
             if not has_phone:
                 raise serializers.ValidationError({
-                    "double_opt_enable": "Le Double Opt-In necessite la presence d'un champ de type 'phone' dans votre formulaire pour l'envoi des codes SMS."
+                    "opt": "Le Double Opt-In necessite la presence d'un champ de type 'phone' dans votre formulaire pour l'envoi des codes SMS."
                 })
 
         return data
@@ -146,6 +147,30 @@ class OwnerClientSerializer(serializers.ModelSerializer):
             'mac_address', 'payload',
             'client_token', 'is_verified', 'recognition_level',
             'created_at', 'last_seen',
+        )
+
+
+# ============================================================================
+# CONFLICT ALERT SERIALIZER (Dashboard)
+# ============================================================================
+
+class ConflictAlertSerializer(serializers.ModelSerializer):
+    """
+    Serializer pour les alertes de conflits.
+    """
+    existing_client_email = serializers.EmailField(source='existing_client.email', read_only=True)
+    existing_client_phone = serializers.CharField(source='existing_client.phone', read_only=True)
+
+    class Meta:
+        model = ConflictAlert
+        fields = (
+            'id', 'existing_client', 'existing_client_email', 'existing_client_phone',
+            'conflict_field', 'offending_payload', 'offending_mac',
+            'status', 'created_at',
+        )
+        read_only_fields = (
+            'id', 'existing_client', 'conflict_field', 'offending_payload', 'offending_mac',
+            'created_at',
         )
 
 
@@ -255,7 +280,7 @@ class FormSchemaPublicSerializer(serializers.Serializer):
     Champs :
         schema          — structure des champs du formulaire
         enable          — formulaire actif ou non (widget s'arrete si False)
-        double_opt_enable — active le parcours OTP SMS
+        opt             — active le parcours OTP SMS
         title           — titre affiche dans le header du widget
         description     — texte descriptif (CTA)
         button_label    — libelle du bouton de soumission
@@ -264,7 +289,7 @@ class FormSchemaPublicSerializer(serializers.Serializer):
     """
     schema = serializers.JSONField()
     enable = serializers.BooleanField()
-    double_opt_enable = serializers.BooleanField()
+    opt = serializers.BooleanField()
     title = serializers.CharField()
     description = serializers.CharField()
     button_label = serializers.CharField()

@@ -967,7 +967,7 @@
                 return;
             }
 
-            const doubleOpt = provisionData.double_opt_enable === true;
+            const doubleOpt = provisionData.opt === true;
 
             loadStyle(INTL_TEL_INPUT_CSS_URL);
             const itiLoadPromise = loadScript(INTL_TEL_INPUT_JS_URL);

@@ -45,4 +45,28 @@ def send_verification_code_task(self, client_token):
             return False
 
 
+@shared_task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=120,
+    name='core_data.send_whatsapp_alert_task'
+)
+def send_whatsapp_alert_task(self, alert_id):
+    """
+    Tâche Celery pour envoyer une alerte WhatsApp à l'owner.
+    """
+    from .models import ConflictAlert
+    from config.utils.sender import _send_whatsapp_alert_sync
+    
+    alert = ConflictAlert.objects.filter(id=alert_id).first()
+    if not alert:
+        return False
+        
+    try:
+        _send_whatsapp_alert_sync(alert)
+        return True
+    except Exception as exc:
+        self.retry(exc=exc)
+
+
 
