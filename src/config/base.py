@@ -148,3 +148,17 @@ DOUBLE_OPT_TTL = 300  # 5 minutes
 # Email Deliverability (vérification réelle des domaines MX via DNS)
 # Par défaut False pour ne pas bloquer les tests/dev avec des domaines fictifs.
 EMAIL_CHECK_DELIVERABILITY = False
+
+
+# --- CELERY BEAT (tâches périodiques) ---
+# Planificateur en mémoire (par défaut). Pour persister la config en base,
+# installer django-celery-beat et changer le scheduler.
+CELERY_BEAT_SCHEDULE = {
+    # Ferme les sessions WiFi sans heartbeat depuis +10 min.
+    # MikroTik refresh status.html toutes les ~60s, donc 5 min entre passages
+    # garantit qu'on rattrape vite les déconnexions silencieuses.
+    'tracking-cleanup-stale-sessions': {
+        'task': 'tracking.cleanup_stale_sessions',
+        'schedule': timedelta(minutes=5),
+    },
+}
