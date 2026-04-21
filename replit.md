@@ -44,7 +44,7 @@ Marchés cibles :
 ## Assistant IA (Gemini) — Statut
 
 - App `assistant` ajoutée à `INSTALLED_APPS`. Migration `0001_initial` appliquée.
-- Intégration : Replit AI Integrations (`python_gemini_ai_integrations`) — pas de clé API à fournir, facturation via crédits Replit. Variables `AI_INTEGRATIONS_GEMINI_API_KEY` et `AI_INTEGRATIONS_GEMINI_BASE_URL` injectées automatiquement.
+- Intégration : API Google Gemini directe via le SDK `google-genai`. Clé à fournir dans `.env` sous `GEMINI_API_KEY` (obtenue sur https://aistudio.google.com/apikey).
 - Modèles : `ChatConversation`, `ChatMessage` (historique persisté par owner).
 - Modèle Gemini par défaut : `gemini-2.5-flash` (max 8192 tokens).
 - Endpoints :

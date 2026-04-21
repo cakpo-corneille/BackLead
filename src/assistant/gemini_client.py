@@ -1,10 +1,13 @@
 """
-Wrapper autour du SDK google-genai branché sur Replit AI Integrations.
-Aucune clé API à gérer : les variables d'env AI_INTEGRATIONS_GEMINI_*
-sont injectées automatiquement par Replit.
+Wrapper autour du SDK officiel google-genai branché directement sur
+l'API Google Gemini (Google AI Studio).
 
-Modèles supportés via AI Integrations :
-- gemini-2.5-flash  : usage quotidien, rapide
+Configuration : ajouter dans le fichier .env à la racine :
+
+    GEMINI_API_KEY=votre_clé_obtenue_sur_https://aistudio.google.com/apikey
+
+Modèles supportés :
+- gemini-2.5-flash  : rapide, usage quotidien
 - gemini-2.5-pro    : raisonnement complexe
 """
 import os
@@ -14,25 +17,24 @@ from google import genai
 from google.genai import types
 
 
-# IMPORTANT: KEEP THIS COMMENT
-# Intégration Replit AI Integrations — pas d'API key à fournir.
-# AI_INTEGRATIONS_GEMINI_API_KEY contient une valeur factice : ne pas la
-# valider en testant simplement sa valeur, faire un vrai appel.
-
 DEFAULT_MODEL = 'gemini-2.5-flash'
 PRO_MODEL = 'gemini-2.5-pro'
 
 
 @lru_cache(maxsize=1)
 def get_client() -> genai.Client:
-    """Retourne le client Gemini (singleton)."""
-    return genai.Client(
-        api_key=os.environ.get('AI_INTEGRATIONS_GEMINI_API_KEY'),
-        http_options={
-            'api_version': '',
-            'base_url': os.environ.get('AI_INTEGRATIONS_GEMINI_BASE_URL'),
-        },
-    )
+    """Retourne le client Gemini (singleton).
+
+    Lit la clé via `GEMINI_API_KEY` (ou `GOOGLE_API_KEY` à défaut).
+    Lève RuntimeError si aucune clé n'est configurée.
+    """
+    api_key = os.environ.get('GEMINI_API_KEY') or os.environ.get('GOOGLE_API_KEY')
+    if not api_key:
+        raise RuntimeError(
+            "GEMINI_API_KEY est manquante. Ajoutez-la dans votre fichier .env "
+            "(obtenez-la gratuitement sur https://aistudio.google.com/apikey)."
+        )
+    return genai.Client(api_key=api_key)
 
 
 def generate_text(
