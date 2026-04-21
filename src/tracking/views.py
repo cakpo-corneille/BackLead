@@ -41,7 +41,10 @@ class TrackingViewSet(viewsets.ViewSet):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            session, created = handle_heartbeat(serializer.validated_data)
+            session, created = handle_heartbeat(
+                serializer.validated_data,
+                user_agent=request.META.get('HTTP_USER_AGENT', ''),
+            )
             return Response(
                 {
                     'ok': True,

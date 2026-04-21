@@ -70,5 +70,6 @@ class ConnectionSessionSerializer(serializers.ModelSerializer):
             'total_mb', 'download_mb', 'upload_mb',
             'plan_name', 'plan_price_fcfa',
             'client', 'client_email', 'client_phone',
+            'user_agent',
         ]
         read_only_fields = fields

@@ -134,6 +134,9 @@ class ConnectionSession(models.Model):
     # État
     is_active = models.BooleanField(default=True, db_index=True)
 
+    # User-Agent du navigateur du client (capturé au 1er heartbeat)
+    user_agent = models.CharField(max_length=512, blank=True, default='')
+
     # Snapshot brut du dernier heartbeat (extensibilité, débogage)
     last_raw_data = models.JSONField(default=dict, blank=True)
 

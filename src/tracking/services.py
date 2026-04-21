@@ -12,7 +12,7 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
-def handle_heartbeat(data):
+def handle_heartbeat(data, user_agent=''):
     """
     Point d'entrée unique pour un heartbeat tracker.
     Crée la session si elle n'existe pas, la met à jour sinon.
@@ -37,6 +37,10 @@ def handle_heartbeat(data):
                 .get(session_key=session_key)
             )
             _apply_heartbeat(session, data)
+            # Renseigne le user-agent s'il manquait (tracker précédent sans capture)
+            if user_agent and not session.user_agent:
+                session.user_agent = user_agent[:512]
+                session.save(update_fields=['user_agent'])
             return session, False
         except ConnectionSession.DoesNotExist:
             logger.warning(
@@ -73,6 +77,7 @@ def handle_heartbeat(data):
         mikrotik_session_id=data.get('session_id') or None,
         download_limit_bytes=download_limit,
         upload_limit_bytes=upload_limit,
+        user_agent=(user_agent or '')[:512],
     )
     _apply_heartbeat(session, data)
 

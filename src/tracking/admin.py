@@ -138,6 +138,7 @@ class ConnectionSessionAdmin(admin.ModelAdmin):
     date_hierarchy = 'started_at'
     readonly_fields = (
         'session_key',
+        'user_agent',
         'started_at',
         'ended_at',
         'last_heartbeat',
@@ -155,7 +156,7 @@ class ConnectionSessionAdmin(admin.ModelAdmin):
 
     fieldsets = (
         ('Identification', {
-            'fields': ('session_key', 'owner', 'client', 'ticket_plan'),
+            'fields': ('session_key', 'owner', 'client', 'ticket_plan', 'user_agent'),
         }),
         ('Réseau MikroTik', {
             'fields': (
@@ -238,6 +239,7 @@ class ConnectionSessionAdmin(admin.ModelAdmin):
             'mac_address', 'ip_address', 'ticket_id', 'plan',
             'started_at', 'ended_at', 'duration_seconds',
             'download_mb', 'upload_mb', 'total_mb', 'is_active',
+            'user_agent',
         ])
         for s in queryset.select_related('owner', 'client', 'ticket_plan'):
             writer.writerow([
@@ -256,5 +258,6 @@ class ConnectionSessionAdmin(admin.ModelAdmin):
                 s.upload_mb,
                 s.total_mb,
                 s.is_active,
+                s.user_agent,
             ])
         return response

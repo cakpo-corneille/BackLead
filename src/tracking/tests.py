@@ -486,11 +486,39 @@ class TrackingPublicEndpointsTest(APITestCase):
             'uptime': '1m',
             'bytes_in': '100',
             'bytes_out': '50',
-        }, format='json')
+        }, format='json', HTTP_USER_AGENT='Mozilla/5.0 (TestPhone)')
         self.assertEqual(r.status_code, status.HTTP_201_CREATED)
         self.assertTrue(r.data['ok'])
         self.assertTrue(r.data['created'])
         self.assertIn('session_key', r.data)
+        s = ConnectionSession.objects.get(session_key=r.data['session_key'])
+        self.assertEqual(s.user_agent, 'Mozilla/5.0 (TestPhone)')
+
+    def test_heartbeat_user_agent_truncated(self):
+        long_ua = 'A' * 1000
+        r = self.client.post(self.heartbeat_url, {
+            'public_key': str(self.public_key),
+            'mac_address': 'AA:BB:CC:DD:EE:FF',
+        }, format='json', HTTP_USER_AGENT=long_ua)
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED)
+        s = ConnectionSession.objects.get(session_key=r.data['session_key'])
+        self.assertEqual(len(s.user_agent), 512)
+
+    def test_heartbeat_backfills_user_agent_on_update(self):
+        """Si la 1ʳᵉ session n'a pas de UA, un heartbeat suivant le renseigne."""
+        s = ConnectionSession.objects.create(
+            owner=self.owner, client=self.client_obj,
+            mac_address='AA:BB:CC:DD:EE:FF',
+        )
+        self.assertEqual(s.user_agent, '')
+        r = self.client.post(self.heartbeat_url, {
+            'public_key': str(self.public_key),
+            'mac_address': 'AA:BB:CC:DD:EE:FF',
+            'session_key': str(s.session_key),
+        }, format='json', HTTP_USER_AGENT='Chrome/120')
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        s.refresh_from_db()
+        self.assertEqual(s.user_agent, 'Chrome/120')
 
     def test_heartbeat_updates_existing(self):
         r1 = self.client.post(self.heartbeat_url, {
