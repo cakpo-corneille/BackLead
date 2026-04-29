@@ -5,7 +5,6 @@ version: "1"
 #
 # Structure :
 #   envVarGroups  → variables partagées web + worker
-#   databases     → PostgreSQL (liste séparée, PAS dans services)
 #   services      → Redis, Web Django, Celery Worker
 #
 # Deux corrections appliquées :
@@ -34,15 +33,6 @@ envVarGroups:
       - key: DJANGO_SUPERUSER_PASSWORD
         sync: false
 
-# ----------------------------------------------------------
-# BASES DE DONNÉES — Liste séparée, jamais dans "services"
-# ----------------------------------------------------------
-databases:
-  - name: backlead-db
-    databaseName: backlead_db
-    user: backlead_user
-    plan: free
-    ipAllowList: []
 
 # ----------------------------------------------------------
 # SERVICES — Web, Redis, Worker au même niveau d'indentation
