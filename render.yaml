@@ -68,6 +68,7 @@ services:
     buildCommand: >
       pip install -r requirements.txt &&
       cd src &&
+      python manage.py migrate core_data 0009 &&
       python manage.py migrate --noinput &&
       python manage.py create_superuser &&
       python manage.py collectstatic --noinput
