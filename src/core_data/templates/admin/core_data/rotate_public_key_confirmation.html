@@ -1,0 +1,21 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content %}
+  <h1>{% trans "Confirm public key rotation" %}</h1>
+  <p>{% trans "You are about to regenerate the public_key for the following FormSchema(s). This is destructive: you will need to update any router/portal URLs that rely on the old key." %}</p>
+  <ul>
+    {% for s in schemas %}
+      <li>{{ s.id }} - {{ s.name }} (owner: {{ s.owner }})</li>
+    {% endfor %}
+  </ul>
+  <form method="post" style="margin-top: 1em;">
+    {% csrf_token %}
+    {% for obj in queryset %}
+      <input type="hidden" name="_selected_action" value="{{ obj.pk }}">
+    {% endfor %}
+    <input type="hidden" name="post" value="yes">
+    <button type="submit" class="button default">{% trans "Yes, rotate public_key" %}</button>
+    <a href=".." class="button">{% trans "Cancel" %}</a>
+  </form>
+{% endblock %}
