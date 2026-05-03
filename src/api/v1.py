@@ -1,4 +1,5 @@
 from rest_framework import routers
+from django.urls import path, include
 from accounts.views import AuthViewSet, ProfileViewSet
 from core_data.views import (
     AnalyticsViewSet, 
@@ -54,5 +55,11 @@ router.register(r'assistant/conversations', ChatConversationViewSet, basename='c
 
 
 urlpatterns = router.urls
+
+# Include subscriptions and superadmin URLs
+urlpatterns += [
+    path('', include('subscriptions.urls')),
+    path('superadmin/', include('superadmin.urls')),
+]
 
 # Additional API endpoints can be registered here in the future

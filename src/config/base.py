@@ -30,10 +30,15 @@ INSTALLED_APPS = [
     # Nécessaire pour la blacklist des refresh tokens après rotation
     'rest_framework_simplejwt.token_blacklist',
     'drf_yasg',
+    'django_celery_beat',
+    
+    # Apps metier
     'accounts',
     'core_data',
     'tracking',
     'assistant',
+    'subscriptions',
+    'superadmin',
 ]
 
 MIDDLEWARE = [
@@ -162,4 +167,58 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'tracking.cleanup_stale_sessions',
         'schedule': timedelta(minutes=5),
     },
+    
+    # === Subscriptions tasks ===
+    'subscriptions-check-pending-payments': {
+        'task': 'subscriptions.check_pending_payments',
+        'schedule': timedelta(minutes=2),
+    },
+    'subscriptions-expire-old-pending-payments': {
+        'task': 'subscriptions.expire_old_pending_payments',
+        'schedule': timedelta(minutes=15),
+    },
+    'subscriptions-expire-trial-subscriptions': {
+        'task': 'subscriptions.expire_trial_subscriptions',
+        'schedule': timedelta(hours=6),
+    },
+    'subscriptions-suspend-overdue-subscriptions': {
+        'task': 'subscriptions.suspend_overdue_subscriptions',
+        'schedule': timedelta(hours=12),
+    },
+    'subscriptions-send-payment-reminders': {
+        'task': 'subscriptions.send_payment_reminders',
+        'schedule': timedelta(hours=24),
+    },
+    'subscriptions-process-renewals': {
+        'task': 'subscriptions.process_subscription_renewals',
+        'schedule': timedelta(hours=24),
+    },
+    
+    # === Superadmin tasks ===
+    'superadmin-cache-realtime-kpis': {
+        'task': 'superadmin.cache_realtime_kpis',
+        'schedule': 30.0,  # Every 30 seconds
+    },
+    'superadmin-check-alert-rules': {
+        'task': 'superadmin.check_alert_rules',
+        'schedule': timedelta(minutes=5),
+    },
+    'superadmin-calculate-daily-metrics': {
+        'task': 'superadmin.calculate_daily_metrics',
+        'schedule': timedelta(hours=24),
+    },
+    'superadmin-cleanup-old-audit-logs': {
+        'task': 'superadmin.cleanup_old_audit_logs',
+        'schedule': timedelta(days=30),
+    },
 }
+
+# === Mobile Money Settings ===
+MTN_MOMO_API_KEY = os.environ.get('MTN_MOMO_API_KEY', '')
+MTN_MOMO_API_SECRET = os.environ.get('MTN_MOMO_API_SECRET', '')
+MTN_MOMO_SUBSCRIPTION_KEY = os.environ.get('MTN_MOMO_SUBSCRIPTION_KEY', '')
+MTN_MOMO_ENVIRONMENT = os.environ.get('MTN_MOMO_ENVIRONMENT', 'sandbox')
+
+MOOV_MONEY_API_KEY = os.environ.get('MOOV_MONEY_API_KEY', '')
+MOOV_MONEY_MERCHANT_ID = os.environ.get('MOOV_MONEY_MERCHANT_ID', '')
+MOOV_MONEY_ENVIRONMENT = os.environ.get('MOOV_MONEY_ENVIRONMENT', 'sandbox')
