@@ -44,16 +44,16 @@ def _normalize_name(name: Optional[str]) -> str:
     """
     if not name or not isinstance(name, str):
         return ""
-    
+
     # Lowercase et trim
     normalized = name.lower().strip()
-    
+
     # Espaces multiples → 1 seul
     normalized = re.sub(r'\s+', ' ', normalized)
-    
+
     # Supprime accents
     normalized = _remove_accents(normalized)
-    
+
     return normalized
 
 
@@ -61,10 +61,10 @@ def _levenshtein_distance(s1: str, s2: str) -> int:
     """Calcule la distance de Levenshtein entre deux chaînes."""
     if len(s1) < len(s2):
         return _levenshtein_distance(s2, s1)
-    
+
     if len(s2) == 0:
         return len(s1)
-    
+
     previous_row = range(len(s2) + 1)
     for i, c1 in enumerate(s1):
         current_row = [i + 1]
@@ -74,7 +74,7 @@ def _levenshtein_distance(s1: str, s2: str) -> int:
             substitutions = previous_row[j] + (c1 != c2)
             current_row.append(min(insertions, deletions, substitutions))
         previous_row = current_row
-    
+
     return previous_row[-1]
 
 
@@ -87,11 +87,11 @@ def _string_similarity(s1: str, s2: str) -> float:
         return 100.0
     if not s1 or not s2:
         return 0.0
-    
+
     max_len = max(len(s1), len(s2))
     distance = _levenshtein_distance(s1, s2)
     similarity = (1 - (distance / max_len)) * 100
-    
+
     return max(0, similarity)
 
 
@@ -99,33 +99,33 @@ def _extract_names_from_payload(payload: Dict[str, Any]) -> Tuple[Optional[str],
     """
     Extrait first_name et last_name du payload.
     Gère variations : nom, prenom, nom_prenom, nomprenoms, etc.
-    
+
     Patterns :
     - first_name, prenom, prénom
     - last_name, nom
     - Champs combinés : nom_prenom, nomprenoms, nom_et_prenom, etc.
-    
+
     Pour champs combinés, assume : premier(s) mot(s) = prénom, dernier = nom
-    
+
     Retourne (first_name, last_name) ou (None, None)
     """
     first_name = None
     last_name = None
-    
+
     if not payload or not isinstance(payload, dict):
         return None, None
-    
+
     # Patterns regex pour détecter les clés
     first_patterns = r'(first_?name|prenom|prénom)(?!.*last)'
     last_patterns = r'(last_?name|nom)(?!.*first)'
     combined_patterns = r'(nom_?prenom|nomprenoms?|nom_et_?prenom|prenom_?et_?nom|full_?name|fullname)'
-    
+
     for key, value in payload.items():
         if not value or not isinstance(value, str):
             continue
-        
+
         key_lower = key.lower().replace('-', '_')
-        
+
         # Cas 1 : champ combiné (nom_prenom, nomprenoms, etc)
         if re.search(combined_patterns, key_lower):
             parts = value.strip().split()
@@ -137,15 +137,15 @@ def _extract_names_from_payload(payload: Dict[str, Any]) -> Tuple[Optional[str],
                 # Seul un mot : assigne au nom par défaut
                 last_name = parts[0]
             continue
-        
+
         # Cas 2 : champ prénom seul
         if re.search(first_patterns, key_lower) and not first_name:
             first_name = value.strip()
-        
+
         # Cas 3 : champ nom seul
         if re.search(last_patterns, key_lower) and not last_name:
             last_name = value.strip()
-    
+
     return first_name, last_name
 
 
@@ -158,10 +158,10 @@ def _calculate_name_similarity(
 ) -> bool:
     """
     Compare deux paires de noms (first_name, last_name) avec fuzzy matching.
-    
+
     Normalise les 4 noms, calcule Levenshtein pour chaque paire,
     retourne True si score moyen ≥ threshold (défaut 90%).
-    
+
     Retourne True si les deux noms sont vides (considéré comme identique par défaut).
     """
     # Normalise
@@ -169,23 +169,23 @@ def _calculate_name_similarity(
     norm_existing_last = _normalize_name(existing_last)
     norm_new_first = _normalize_name(new_first)
     norm_new_last = _normalize_name(new_last)
-    
+
     # Si tous vides, considère comme identique
     if (not norm_existing_first and not norm_existing_last and
-        not norm_new_first and not norm_new_last):
+            not norm_new_first and not norm_new_last):
         return True
-    
+
     # Calcule similitude pour chaque paire
     first_similarity = _string_similarity(norm_existing_first, norm_new_first)
     last_similarity = _string_similarity(norm_existing_last, norm_new_last)
-    
+
     # Score moyen
     avg_similarity = (first_similarity + last_similarity) / 2
-    
+
     logger.info(
         f"Name similarity: first={first_similarity:.1f}%, last={last_similarity:.1f}%, avg={avg_similarity:.1f}%"
     )
-    
+
     return avg_similarity >= threshold
 
 
@@ -204,10 +204,10 @@ def _handle_silent_attachment(
 ) -> dict:
     """
     Rattache un nouveau device (MAC) à un client existant.
-    
+
     Crée/met à jour une entrée ClientDevice avec la MAC et user_agent.
     NE TOUCHE PAS aux champs du client lui-même (first_name, last_name, etc.).
-    
+
     Retourne dict avec client_token et infos de succès.
     """
     # Crée ou met à jour le device
@@ -219,12 +219,12 @@ def _handle_silent_attachment(
             'last_seen': timezone.now(),
         }
     )
-    
+
     logger.info(
         f"Device {'created' if created else 'updated'}: "
         f"client={client.id}, mac={mac_address}"
     )
-    
+
     return {
         'created': False,
         'duplicate': False,
@@ -257,10 +257,10 @@ def _maybe_create_conflict_alert(
         defaults={'offending_payload': payload}
     )
     if created:
-        try :
+        try:
             from config.utils.sender import notify_conflict_alert
             notify_conflict_alert(alert)
-         except Exception as e:
+        except Exception as e:
             logger.warning(f"notify_conflict_alert échoué : {e}")
 
 
@@ -384,7 +384,7 @@ def ingest(
 
     Niveau 2 — Conflit détecté (email/téléphone connu, device inconnu)
         → Règle absolue : on n'écrase JAMAIS le client existant.
-        
+
         → Cas particulier (noms similaires ≥ 90%) : rattachement silencieux du
           nouveau device au client existant + alerte owner. Pas de doublon.
 
