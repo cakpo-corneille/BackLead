@@ -141,8 +141,8 @@ class OwnerClientAdmin(admin.ModelAdmin):
         'phone',
         'owner__profile',
         'is_verified_badge',
-        'visit_info',
-        'created_at'
+        'created_at',
+        'last_seen'
     )
     search_fields = (
         'mac_address',

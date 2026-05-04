@@ -257,10 +257,10 @@ def _maybe_create_conflict_alert(
         defaults={'offending_payload': payload}
     )
     if created:
-        try {
+        try :
             from config.utils.sender import notify_conflict_alert
             notify_conflict_alert(alert)
-        } except Exception as e:
+         except Exception as e:
             logger.warning(f"notify_conflict_alert échoué : {e}")
 
 
