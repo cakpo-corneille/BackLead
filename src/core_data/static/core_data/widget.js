@@ -1,1377 +1,1190 @@
 /**
- * WiFi Marketing Widget v3.3.0
- * Collecte de leads avec double opt-in
+ * WiFi Marketing Widget v4.0.0
+ * Collecte de leads avec double opt-in pour portails captifs WiFi.
+ *
+ * Architecture : modules fonctionnels purs + orchestrateur unique.
+ * Chaque section a une responsabilité unique et ne dépend pas des autres
+ * sauf via les interfaces explicitement exportées.
+ *
  * @license MIT
  */
 
-(function(window, document) {
+(function bootstrap(window, document) {
     'use strict';
 
-    // ============================================================================
-    // FOUC PREVENTION — Injection synchrone avant tout rendu navigateur
-    // Doit s'exécuter avant DOMContentLoaded pour masquer la page hôte.
-    // ============================================================================
-    (function() {
-        var s = document.createElement('style');
-        s.id = 'cdw-fouc';
-        s.textContent = 'body{visibility:hidden!important}';
-        (document.head || document.documentElement).appendChild(s);
+    // ─────────────────────────────────────────────────────────────────────────
+    // FOUC GUARD
+    // Exécuté en premier, de manière synchrone, avant tout rendu navigateur.
+    // Masque la page hôte pendant l'initialisation du widget.
+    // Un garde-fou libère automatiquement la page après FOUC_TIMEOUT ms.
+    // ─────────────────────────────────────────────────────────────────────────
 
-        // Garde-fou : si init() ne s'exécute jamais (erreur réseau, etc.),
-        // on libère la page après 10 secondes maximum.
-        setTimeout(function() {
-            var el = document.getElementById('cdw-fouc');
-            if (el) el.parentNode.removeChild(el);
-            document.body.style.visibility = '';
-        }, 10000);
+    const FOUC_TIMEOUT_MS = 10_000;
+
+    (function installFoucGuard() {
+        const style = document.createElement('style');
+        style.id = 'cdw-fouc';
+        style.textContent = 'body{visibility:hidden!important}';
+        (document.head || document.documentElement).appendChild(style);
+
+        setTimeout(() => Dom.revealPage(), FOUC_TIMEOUT_MS);
     })();
 
-    // ============================================================================
-    // CONFIGURATION ET AUTO-DÉTECTION
-    // ============================================================================
 
-    const currentScript = document.currentScript;
-    const scriptOrigin = currentScript ? new URL(currentScript.src).origin : '';
+    // ─────────────────────────────────────────────────────────────────────────
+    // CONFIG
+    // Toutes les constantes de configuration en un seul endroit.
+    // ─────────────────────────────────────────────────────────────────────────
 
-    const CONFIG = {
-        API_BASE: scriptOrigin ? `${scriptOrigin}/api/v1/portal/` : '/api/v1/portal/',
-        STORAGE_PREFIX: 'cdw_',
-        OVERLAY_Z_INDEX: 99999,
-        ANIMATION_DURATION: 400
+    const _script  = document.currentScript;
+    const _origin  = _script ? new URL(_script.src).origin : '';
+
+    const CONFIG = Object.freeze({
+        API_BASE:           `${_origin}/api/v1/portal/`,
+        STORAGE_PREFIX:     'cdw_',
+        OVERLAY_Z_INDEX:    99_999,
+        ANIMATION_MS:       400,
+        RESEND_COOLDOWN_MS: 60_000,
+        TOAST_DURATION_MS:  4_000,
+        GEO_TIMEOUT_MS:     2_000,
+        OTP_LENGTH:         6,
+        FOUC_TIMEOUT_MS,
+        ITI: {
+            CSS: `${_origin}/static/core_data/intl-tel-input/css/intlTelInput.min.css`,
+            JS:  `${_origin}/static/core_data/intl-tel-input/js/intlTelInputWithUtils.min.js`,
+        },
+        /** Ordre d'affichage des pays dans le sélecteur téléphone. */
+        COUNTRY_ORDER: [
+            'bj','ci','sn','tg','ml','bf','ne','fr','be','ch','ca','us','gb',
+            'dz','ao','bw','cd','cg','cm','cv','dj','eg','er','et','ga','gh',
+            'gm','gn','gq','gw','ke','km','lr','ls','ly','ma','mg','mr','mu',
+            'mw','mz','na','ng','rw','sc','sd','sl','so','ss','st','sz','td',
+            'tn','tz','ug','za','zm','zw',
+        ],
+        /** Paramètres URL connus pour l'adresse MAC selon les constructeurs. */
+        MAC_URL_PARAMS: [
+            'mac','mac_address','client_mac','clientmac','id','clt_mac',
+            'chilli_mac','clientMac','ap_mac','usermac','sta_mac','aruba_mac',
+            'UserMac','user_mac','mac_addr','client-mac','sip',
+        ],
+    });
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // LOGGER
+    // Wrapping console pour préfixage uniforme et désactivation future facile.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const Log = {
+        info:  (...a) => console.log('[CDW]',  ...a),
+        warn:  (...a) => console.warn('[CDW]', ...a),
+        error: (...a) => console.error('[CDW]',...a),
     };
 
-    // ============================================================================
-    // INTL-TEL-INPUT (hébergé en local, jamais depuis CDN externe)
-    // ============================================================================
 
-    const INTL_TEL_INPUT_CSS_URL = `${scriptOrigin}/static/core_data/intl-tel-input/css/intlTelInput.min.css`;
-    const INTL_TEL_INPUT_JS_URL  = `${scriptOrigin}/static/core_data/intl-tel-input/js/intlTelInputWithUtils.min.js`;
-
-    // ============================================================================
-    // UTILITAIRES
-    // ============================================================================
-
-    function revealPage() {
-        document.body.style.visibility = '';
-        var s = document.getElementById('cdw-fouc');
-        if (s && s.parentNode) s.parentNode.removeChild(s);
-    }
-
-    function lockScroll() {
-        document.documentElement.style.overflow = 'hidden';
-        document.body.style.overflow = 'hidden';
-    }
-
-    function unlockScroll() {
-        document.documentElement.style.overflow = '';
-        document.body.style.overflow = '';
-    }
-
-    function createLoadingScreen() {
-        var el = document.createElement('div');
-        el.id = 'cdw-loading-screen';
-        el.style.cssText = [
-            'position:fixed', 'inset:0',
-            'z-index:' + (CONFIG.OVERLAY_Z_INDEX + 1),
-            'display:flex', 'align-items:center', 'justify-content:center',
-            'background:linear-gradient(135deg,rgba(99,102,241,0.1),rgba(139,92,246,0.1)),rgba(0,0,0,0.65)',
-            'backdrop-filter:blur(8px)',
-            'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif'
-        ].join(';');
-        el.innerHTML = [
-            '<div style="display:flex;flex-direction:column;align-items:center;gap:20px;">',
-                '<div style="width:48px;height:48px;border:4px solid rgba(255,255,255,0.25);',
-                    'border-top-color:#fff;border-radius:50%;animation:cdw-spin 0.8s linear infinite;">',
-                '</div>',
-                '<p style="color:rgba(255,255,255,0.9);font-size:15px;font-weight:500;margin:0;">',
-                    'Connexion en cours\u2026',
-                '</p>',
-            '</div>'
-        ].join('');
-        document.body.appendChild(el);
-        return el;
-    }
-
-    function removeLoadingScreen(el) {
-        if (!el || !el.parentNode) return;
-        el.style.transition = 'opacity 0.25s ease';
-        el.style.opacity = '0';
-        setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, 260);
-    }
-
-    function loadStyle(url) {
-        if (document.querySelector('link[href="' + url + '"]')) return;
-        const link = document.createElement('link');
-        link.rel = 'stylesheet';
-        link.href = url;
-        document.head.appendChild(link);
-    }
-
-    function loadScript(url) {
-        return new Promise(function(resolve, reject) {
-            if (document.querySelector('script[src="' + url + '"]')) { resolve(); return; }
-            const script = document.createElement('script');
-            script.src = url;
-            script.onload = resolve;
-            script.onerror = reject;
-            document.head.appendChild(script);
-        });
-    }
-
-    function getURLParam(name) {
-        const regex = new RegExp('[?&]' + name + '=([^&]*)', 'i');
-        const match = regex.exec(window.location.search);
-        return match ? decodeURIComponent(match[1]) : null;
-    }
-
-    // ============================================================================
-    // NOUVELLE FONCTION getCurrentScript() (seule modification apportée)
-    // ============================================================================
-    function getCurrentScript() {
-        // 1. Méthode native la plus rapide (fonctionne pendant l'exécution synchrone)
-        if (document.currentScript) {
-            return document.currentScript;
-        }
-
-        // 2. Méthode la plus fiable : on cherche par l'attribut data-public-key
-        const widgetScript = document.querySelector('script[data-public-key]');
-        if (widgetScript) {
-            return widgetScript;
-        }
-
-        // Si on arrive ici → il y a vraiment un problème (script mal configuré)
-        console.warn('[Widget] Impossible de détecter le script du widget. Vérifiez la présence de data-public-key.');
-        return null;
-    }
-
-    function isValidMAC(value) {
-        return /^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$/.test(value);
-    }
-
-    function getMacAddress() {
-        const scriptTag = document.currentScript || document.querySelector('script[data-public-key]');
-        if (scriptTag) {
-            const macFromAttr = scriptTag.getAttribute('data-mac');
-            if (macFromAttr && macFromAttr !== '$(mac)') {
-                const normalized = macFromAttr.toUpperCase().replace(/-/g, ':');
-                if (isValidMAC(normalized)) {
-                    console.log('[Widget] MAC depuis attribut data-mac (template serveur) :', normalized);
-                    return normalized;
-                }
-            }
-        }
-
-        const urlParams = [
-            'mac', 'mac_address', 'client_mac', 'clientmac', 'id',
-            'clt_mac', 'chilli_mac', 'clientMac', 'ap_mac', 'usermac',
-            'sta_mac', 'aruba_mac', 'UserMac', 'user_mac', 'mac_addr',
-            'client-mac', 'sip',
-        ];
-
-        for (const param of urlParams) {
-            const val = getURLParam(param);
-            if (val) {
-                const normalized = val.toUpperCase().replace(/-/g, ':');
-                if (isValidMAC(normalized)) {
-                    console.log('[Widget] MAC depuis URL ?' + param + '= :', normalized);
-                    return normalized;
-                }
-            }
-        }
-
-        console.warn(
-            '[Widget] Adresse MAC introuvable.\n' +
-            '  → MikroTik / OpenNDS : ajoutez data-mac="$(mac)" sur la balise <script>.\n' +
-            '  → UniFi / Coova-Chilli / Meraki : vérifiez que la redirection inclut bien le paramètre MAC.'
-        );
-        return null;
-    }
+    // ─────────────────────────────────────────────────────────────────────────
+    // STORAGE
+    // Abstraction localStorage : gestion des erreurs + préfixe automatique.
+    // ─────────────────────────────────────────────────────────────────────────
 
     const Storage = {
-        set: function(key, value) {
-            try { localStorage.setItem(CONFIG.STORAGE_PREFIX + key, value); }
-            catch (e) { console.warn('[Widget] localStorage indisponible'); }
+        _key: (k) => `${CONFIG.STORAGE_PREFIX}${k}`,
+
+        set(key, value) {
+            try { localStorage.setItem(this._key(key), value); }
+            catch { Log.warn('localStorage indisponible.'); }
         },
-        get: function(key) {
-            try { return localStorage.getItem(CONFIG.STORAGE_PREFIX + key); }
-            catch (e) { return null; }
-        }
+
+        get(key) {
+            try { return localStorage.getItem(this._key(key)); }
+            catch { return null; }
+        },
     };
 
-    async function fetchAPI(url, options) {
-        try {
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // API CLIENT
+    // Couche fetch centralisée : parsing JSON, normalisation des erreurs.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    class ApiError extends Error {
+        constructor(message, status, data) {
+            super(message);
+            this.name   = 'ApiError';
+            this.status = status;
+            this.data   = data;
+        }
+    }
+
+    const Api = {
+        async request(url, options = {}) {
             const response = await fetch(url, { ...options, credentials: 'include' });
-            const data = await response.json();
+            const data     = await response.json();
+
             if (!response.ok) {
-                const errorMessage = data.detail || data.error || data.message ||
-                    (data.payload && typeof data.payload === 'string' ? data.payload : null) ||
-                    'Une erreur est survenue';
-                const error = new Error(errorMessage);
-                error.status = response.status;
-                error.data = data;
-                throw error;
+                const message = (
+                    data.detail ??
+                    data.error  ??
+                    data.message ??
+                    (typeof data.payload === 'string' ? data.payload : null) ??
+                    'Une erreur est survenue'
+                );
+                throw new ApiError(message, response.status, data);
             }
+
             return data;
-        } catch (error) {
-            console.error('[Widget] Erreur API:', error);
-            throw error;
-        }
-    }
-
-    function buildIdentityConfirmView(onConfirm, onDeny) {
-        var container = document.createElement('div');
-        container.className = 'cdw-identity-confirm';
-
-        var msg = document.createElement('p');
-        msg.className = 'cdw-identity-msg';
-        msg.textContent = 'Ce contact est déjà associé à un compte. Est-ce bien vous ?';
-
-        var btnYes = document.createElement('button');
-        btnYes.className = 'cdw-btn cdw-btn-primary';
-        btnYes.textContent = 'Oui, c\'est moi';
-        btnYes.type = 'button';
-
-        var btnNo = document.createElement('button');
-        btnNo.className = 'cdw-btn cdw-btn-secondary';
-        btnNo.textContent = 'Non, ce n\'est pas moi';
-        btnNo.type = 'button';
-
-        btnYes.addEventListener('click', onConfirm);
-        btnNo.addEventListener('click', onDeny);
-
-        var actions = document.createElement('div');
-        actions.className = 'cdw-identity-actions';
-        actions.appendChild(btnYes);
-        actions.appendChild(btnNo);
-
-        container.appendChild(msg);
-        container.appendChild(actions);
-
-        return container;
-    }
-
-    // ============================================================================
-    // STYLES
-    // ============================================================================
-
-    function injectStyles() {
-        if (document.getElementById('cdw-styles')) return;
-
-        const css = `
-            * { box-sizing: border-box; }
-
-            #cdw-overlay {
-                position: fixed;
-                inset: 0;
-                background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.1)),
-                            rgba(0, 0, 0, 0.75);
-                backdrop-filter: blur(8px);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                z-index: ${CONFIG.OVERLAY_Z_INDEX};
-                padding: 20px;
-                opacity: 0;
-                animation: cdw-fadeIn ${CONFIG.ANIMATION_DURATION}ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
-            }
-
-            @keyframes cdw-fadeIn { to { opacity: 1; } }
-            @keyframes cdw-fadeOut { to { opacity: 0; } }
-
-            @keyframes cdw-slideUp {
-                from { opacity: 0; transform: translateY(30px) scale(0.95); }
-                to   { opacity: 1; transform: translateY(0) scale(1); }
-            }
-
-            @keyframes cdw-pulse {
-                0%, 100% { transform: scale(1); }
-                50%       { transform: scale(1.05); }
-            }
-
-            @keyframes cdw-slideInRight {
-                from { opacity: 0; transform: translateX(100px); }
-                to   { opacity: 1; transform: translateX(0); }
-            }
-
-            .cdw-modal {
-                background: white;
-                border-radius: 20px;
-                padding: 0;
-                max-width: 440px;
-                width: 100%;
-                max-height: 85vh;
-                overflow: hidden;
-                box-shadow: 0 25px 50px -12px rgba(0,0,0,0.4), 0 0 0 1px rgba(0,0,0,0.05);
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
-                animation: cdw-slideUp ${CONFIG.ANIMATION_DURATION}ms cubic-bezier(0.4, 0, 0.2, 1);
-                display: flex;
-                flex-direction: column;
-            }
-
-            .cdw-modal-content {
-                overflow-y: auto;
-                padding: 32px 28px;
-                flex: 1;
-            }
-
-            .cdw-modal-content::-webkit-scrollbar { width: 8px; }
-            .cdw-modal-content::-webkit-scrollbar-track { background: transparent; margin: 12px 0; }
-            .cdw-modal-content::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
-            .cdw-modal-content::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
-
-            .cdw-header { text-align: center; margin-bottom: 28px; }
-
-            .cdw-brand {
-                display: flex; align-items: center; justify-content: center;
-                gap: 12px; margin-bottom: 12px;
-            }
-
-            .cdw-logo {
-                width: 56px; height: 56px; border-radius: 50%; object-fit: cover;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.15); border: 3px solid white;
-                flex-shrink: 0;
-            }
-
-            .cdw-business-name {
-                font-size: 22px; font-weight: 700; color: #111827; margin: 0;
-                letter-spacing: -0.02em; line-height: 1.2; text-align: left;
-                flex: 1; word-break: break-word;
-            }
-
-            .cdw-cta { font-size: 15px; color: #6b7280; margin: 0; line-height: 1.5; }
-
-            .cdw-form { display: flex; flex-direction: column; gap: 18px; }
-
-            .cdw-field { display: flex; flex-direction: column; gap: 8px; }
-
-            .cdw-label {
-                font-size: 14px; font-weight: 600; color: #374151;
-                display: flex; align-items: center; gap: 4px;
-            }
-
-            .cdw-required { color: #ef4444; font-size: 16px; }
-
-            .cdw-input, .cdw-select {
-                width: 100%; padding: 12px 16px; border: 2px solid #e5e7eb;
-                border-radius: 12px; font-size: 15px; background: #f9fafb;
-                color: #111827; transition: all 0.2s cubic-bezier(0.4,0,0.2,1);
-                font-family: inherit;
-            }
-
-            .cdw-input::placeholder { color: #9ca3af; }
-
-            .cdw-input:hover, .cdw-select:hover { border-color: #d1d5db; background: white; }
-
-            .cdw-input:focus, .cdw-select:focus {
-                outline: none; border-color: #6366f1; background: white;
-                box-shadow: 0 0 0 4px rgba(99,102,241,0.1);
-            }
-
-            .cdw-input:disabled, .cdw-select:disabled {
-                background: #f3f4f6; cursor: not-allowed; opacity: 0.6;
-            }
-
-            .cdw-checkbox-wrapper {
-                display: flex; align-items: flex-start; gap: 12px; padding: 12px;
-                background: #f9fafb; border-radius: 12px; border: 2px solid #e5e7eb;
-                transition: all 0.2s; cursor: pointer;
-            }
-
-            .cdw-checkbox-wrapper:hover { border-color: #d1d5db; background: white; }
-
-            .cdw-checkbox { width: 20px; height: 20px; cursor: pointer; margin-top: 2px; flex-shrink: 0; }
-
-            .cdw-checkbox-label { flex: 1; font-size: 14px; color: #374151; line-height: 1.5; cursor: pointer; }
-
-            .cdw-submit {
-                margin-top: 8px; width: 100%; padding: 14px 24px; border: none;
-                border-radius: 12px; font-size: 16px; font-weight: 600;
-                background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-                color: white; cursor: pointer; transition: all 0.2s ease;
-                box-shadow: 0 4px 12px rgba(99,102,241,0.4);
-            }
-
-            .cdw-submit:hover:not(:disabled) { box-shadow: 0 6px 16px rgba(99,102,241,0.5); transform: translateY(-1px); }
-            .cdw-submit:active:not(:disabled) { transform: translateY(0); }
-            .cdw-submit:disabled { background: #9ca3af; cursor: not-allowed; box-shadow: none; transform: none; }
-
-            .cdw-spinner {
-                display: inline-block; width: 16px; height: 16px;
-                border: 2px solid rgba(255,255,255,0.3); border-top-color: white;
-                border-radius: 50%; animation: cdw-spin 0.8s linear infinite;
-                margin-right: 8px; vertical-align: middle;
-            }
-
-            @keyframes cdw-spin { to { transform: rotate(360deg); } }
-
-            .cdw-toast {
-                position: fixed; top: 20px; right: 20px; max-width: 400px;
-                padding: 16px 20px; border-radius: 12px; font-size: 14px;
-                display: flex; align-items: flex-start; gap: 12px;
-                z-index: ${CONFIG.OVERLAY_Z_INDEX + 1};
-                box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-                animation: cdw-slideInRight 0.3s ease;
-            }
-
-            .cdw-toast-icon {
-                flex-shrink: 0; width: 24px; height: 24px; border-radius: 50%;
-                display: flex; align-items: center; justify-content: center;
-                font-weight: bold; font-size: 14px;
-            }
-
-            .cdw-toast-content { flex: 1; line-height: 1.5; }
-
-            .cdw-toast-error  { background: #fef2f2; border: 2px solid #fecaca; color: #991b1b; }
-            .cdw-toast-error  .cdw-toast-icon { background: #dc2626; color: white; }
-            .cdw-toast-success{ background: #f0fdf4; border: 2px solid #bbf7d0; color: #166534; }
-            .cdw-toast-success .cdw-toast-icon { background: #22c55e; color: white; }
-            .cdw-toast-info   { background: #eff6ff; border: 2px solid #bfdbfe; color: #1e40af; }
-            .cdw-toast-info   .cdw-toast-icon { background: #3b82f6; color: white; }
-
-            .cdw-message {
-                padding: 14px 16px; border-radius: 12px; font-size: 14px;
-                margin-bottom: 16px; display: flex; align-items: flex-start;
-                gap: 12px; line-height: 1.5;
-            }
-
-            .cdw-message-icon {
-                flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%;
-                display: flex; align-items: center; justify-content: center;
-                font-weight: bold; font-size: 14px;
-            }
-
-            .cdw-message-content { flex: 1; }
-
-            .cdw-message-error  { background: #fef2f2; border: 2px solid #fecaca; color: #991b1b; }
-            .cdw-message-error  .cdw-message-icon { background: #dc2626; color: white; }
-            .cdw-message-success{ background: #f0fdf4; border: 2px solid #bbf7d0; color: #166534; }
-            .cdw-message-success .cdw-message-icon { background: #22c55e; color: white; }
-            .cdw-message-info   { background: #eff6ff; border: 2px solid #bfdbfe; color: #1e40af; }
-            .cdw-message-info   .cdw-message-icon { background: #3b82f6; color: white; }
-
-            .cdw-verification { text-align: center; padding: 24px 0; }
-
-            .cdw-verification-icon {
-                width: 64px; height: 64px; margin: 0 auto 16px;
-                background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-                border-radius: 50%; display: flex; align-items: center;
-                justify-content: center; color: white; font-size: 32px;
-                animation: cdw-pulse 2s infinite;
-            }
-
-            .cdw-verification-title { font-size: 20px; font-weight: 700; color: #111827; margin: 0 0 8px 0; }
-            .cdw-verification-text  { font-size: 14px; color: #6b7280; margin: 0 0 24px 0; line-height: 1.6; }
-
-            .cdw-code-inputs {
-                display: flex; gap: 12px; justify-content: center; margin-bottom: 24px;
-            }
-
-            .cdw-code-input {
-                width: 52px; height: 60px; font-size: 24px; font-weight: 700;
-                text-align: center; border: 2px solid #e5e7eb; border-radius: 12px;
-                background: #f9fafb; color: #111827; transition: all 0.2s;
-            }
-
-            .cdw-code-input:focus {
-                outline: none; border-color: #6366f1; background: white;
-                box-shadow: 0 0 0 4px rgba(99,102,241,0.1);
-            }
-
-            .cdw-resend-link {
-                display: inline-block; color: #6366f1; text-decoration: none;
-                font-size: 14px; font-weight: 600; margin-top: 16px;
-                transition: color 0.2s; cursor: pointer;
-            }
-
-            .cdw-resend-link:hover:not(.cdw-disabled) { color: #4f46e5; text-decoration: underline; }
-            .cdw-resend-link.cdw-disabled { color: #9ca3af; cursor: not-allowed; text-decoration: none; }
-
-            /* ---- intl-tel-input overrides ---- */
-            .iti { width: 100%; }
-
-            .iti__input, .iti input[type=tel] {
-                width: 100% !important; padding: 12px 16px !important;
-                padding-left: 58px !important; border: 2px solid #e5e7eb !important;
-                border-radius: 12px !important; font-size: 15px !important;
-                background: #f9fafb !important; color: #111827 !important;
-                transition: all 0.2s cubic-bezier(0.4,0,0.2,1) !important;
-                height: auto !important; font-family: inherit !important;
-            }
-
-            .iti__input:focus, .iti input[type=tel]:focus {
-                outline: none !important; border-color: #6366f1 !important;
-                background: white !important;
-                box-shadow: 0 0 0 4px rgba(99,102,241,0.1) !important;
-            }
-
-            .iti__selected-dial-code { display: none !important; }
-
-            .iti__dropdown-content {
-                z-index: ${CONFIG.OVERLAY_Z_INDEX + 10} !important;
-                max-height: 220px !important;
-            }
-
-            .iti__country-list {
-                border-radius: 12px !important;
-                box-shadow: 0 10px 25px rgba(0,0,0,0.15) !important;
-                border: 1px solid #e5e7eb !important;
-                max-height: 200px !important;
-                overflow-y: auto !important;
-            }
-
-            .iti__search-input {
-                padding: 10px 14px !important; font-size: 14px !important;
-                height: 42px !important; border-bottom: 1px solid #e5e7eb !important;
-                width: 100% !important; box-sizing: border-box !important;
-                outline: none !important;
-            }
-
-            .cdw-verification-error {
-                font-size: 13px; color: #dc2626; margin-top: 8px; margin-bottom: 4px;
-                min-height: 18px; display: none;
-            }
-            .cdw-verification-error.visible { display: block; }
-
-            .cdw-verification-spinner { margin-top: 12px; text-align: center; }
-            .cdw-verification-spinner .cdw-spinner { width: 22px; height: 22px; border-width: 3px; }
-
-            .cdw-phone-error { font-size: 13px; color: #dc2626; margin-top: 6px; display: none; }
-            .cdw-phone-error.visible { display: block; }
-
-            .cdw-field-error { font-size: 13px; color: #dc2626; margin-top: 4px; display: none; }
-            .cdw-field-error.visible { display: block; }
-
-            .iti__dial-code { color: #6366f1 !important; }
-            /* ---- fin intl-tel-input overrides ---- */
-
-            @media (max-width: 480px) {
-                .cdw-modal-content { padding: 24px 20px; }
-                .cdw-business-name { font-size: 18px; }
-                .cdw-logo { width: 48px; height: 48px; }
-                .cdw-code-input { width: 44px; height: 52px; font-size: 20px; }
-                .cdw-toast { left: 20px; right: 20px; max-width: none; }
-            }
-        `;
-
-        const style = document.createElement('style');
-        style.id = 'cdw-styles';
-        style.textContent = css;
-        document.head.appendChild(style);
-    }
-
-    // ============================================================================
-    // UI BUILDERS
-    // ============================================================================
-
-    function createOverlay() {
-        const overlay = document.createElement('div');
-        overlay.id = 'cdw-overlay';
-        return overlay;
-    }
-
-    function createModal() {
-        const modal = document.createElement('div');
-        modal.className = 'cdw-modal';
-        const content = document.createElement('div');
-        content.className = 'cdw-modal-content';
-        modal.appendChild(content);
-        return { modal: modal, content: content };
-    }
-
-    function showToast(type, text) {
-        const existing = document.querySelector('.cdw-toast');
-        if (existing) existing.remove();
-
-        const toast = document.createElement('div');
-        toast.className = 'cdw-toast cdw-toast-' + type;
-
-        const icon = document.createElement('div');
-        icon.className = 'cdw-toast-icon';
-        icon.textContent = type === 'error' ? '!' : type === 'success' ? '✓' : 'i';
-
-        const content = document.createElement('div');
-        content.className = 'cdw-toast-content';
-        content.textContent = text;
-
-        toast.appendChild(icon);
-        toast.appendChild(content);
-        document.body.appendChild(toast);
-
-        setTimeout(function() {
-            toast.style.animation = 'cdw-fadeOut 0.3s ease';
-            setTimeout(function() { toast.remove(); }, 300);
-        }, 4000);
-    }
-
-    function showMessage(container, type, text) {
-        const existing = container.querySelector('.cdw-message');
-        if (existing) existing.remove();
-
-        const message = document.createElement('div');
-        message.className = 'cdw-message cdw-message-' + type;
-
-        const icon = document.createElement('div');
-        icon.className = 'cdw-message-icon';
-        icon.textContent = type === 'error' ? '!' : type === 'success' ? '✓' : 'i';
-
-        const content = document.createElement('div');
-        content.className = 'cdw-message-content';
-        content.textContent = text;
-
-        message.appendChild(icon);
-        message.appendChild(content);
-        container.insertBefore(message, container.firstChild);
-    }
-
-    function buildHeader(provisionData) {
-        const header = document.createElement('div');
-        header.className = 'cdw-header';
-
-        const brand = document.createElement('div');
-        brand.className = 'cdw-brand';
-
-        const owner = (provisionData && provisionData.owner) || {};
-        const logoUrl = (provisionData && provisionData.logo_url) || owner.logo_url || owner.logo;
-        const businessName = (provisionData && provisionData.title) || owner.name || owner.business_name || 'WiFi Public';
-        const description = (provisionData && provisionData.description) || 'Partagez vos coordonnees pour profiter du WiFi gratuit';
-
-        if (logoUrl) {
-            const logo = document.createElement('img');
-            logo.src = logoUrl;
-            logo.className = 'cdw-logo';
-            logo.alt = businessName;
-            brand.appendChild(logo);
-        }
-
-        const titleEl = document.createElement('div');
-        titleEl.className = 'cdw-business-name';
-        titleEl.textContent = businessName;
-        brand.appendChild(titleEl);
-
-        header.appendChild(brand);
-
-        const cta = document.createElement('p');
-        cta.className = 'cdw-cta';
-        cta.textContent = description;
-        header.appendChild(cta);
-
-        return header;
-    }
-
-    function buildPhoneField(fieldData) {
-        const field = document.createElement('div');
-        field.className = 'cdw-field';
-
-        const label = document.createElement('label');
-        label.className = 'cdw-label';
-        label.htmlFor = 'cdw-field-' + fieldData.name;
-
-        const labelText = document.createElement('span');
-        labelText.textContent = fieldData.label || fieldData.name;
-        label.appendChild(labelText);
-
-        if (fieldData.required) {
-            const required = document.createElement('span');
-            required.className = 'cdw-required';
-            required.textContent = '*';
-            label.appendChild(required);
-        }
-
-        field.appendChild(label);
-
-        const input = document.createElement('input');
-        input.id = 'cdw-field-' + fieldData.name;
-        input.name = fieldData.name;
-        input.type = 'tel';
-        input.className = 'cdw-input cdw-phone-input';
-        if (fieldData.required) input.required = true;
-
-        field.appendChild(input);
-
-        const errorMsg = document.createElement('div');
-        errorMsg.className = 'cdw-field-error cdw-phone-error';
-        errorMsg.dataset.field = fieldData.name;
-        errorMsg.textContent = 'Numéro de téléphone invalide';
-        field.appendChild(errorMsg);
-
-        return field;
-    }
-
-    function buildFormField(fieldData) {
-        const field = document.createElement('div');
-        field.className = 'cdw-field';
-
-        if (fieldData.type === 'boolean') {
-            const wrapper = document.createElement('label');
-            wrapper.className = 'cdw-checkbox-wrapper';
-
-            const input = document.createElement('input');
-            input.type = 'checkbox';
-            input.name = fieldData.name;
-            input.className = 'cdw-checkbox';
-            input.id = 'cdw-field-' + fieldData.name;
-
-            const label = document.createElement('span');
-            label.className = 'cdw-checkbox-label';
-            label.textContent = fieldData.label || fieldData.name;
-
-            wrapper.appendChild(input);
-            wrapper.appendChild(label);
-            field.appendChild(wrapper);
-            return field;
-        }
-
-        if (fieldData.type === 'phone') {
-            return buildPhoneField(fieldData);
-        }
-
-        const label = document.createElement('label');
-        label.className = 'cdw-label';
-        label.htmlFor = 'cdw-field-' + fieldData.name;
-
-        const labelText = document.createElement('span');
-        labelText.textContent = fieldData.label || fieldData.name;
-        label.appendChild(labelText);
-
-        if (fieldData.required) {
-            const required = document.createElement('span');
-            required.className = 'cdw-required';
-            required.textContent = '*';
-            label.appendChild(required);
-        }
-
-        field.appendChild(label);
-
-        let input;
-
-        if (fieldData.type === 'choice') {
-            input = document.createElement('select');
-            input.className = 'cdw-select';
-
-            const placeholder = document.createElement('option');
-            placeholder.value = '';
-            placeholder.textContent = 'Sélectionnez une option';
-            placeholder.disabled = true;
-            placeholder.selected = true;
-            input.appendChild(placeholder);
-
-            (fieldData.choices || []).forEach(function(choice) {
-                const option = document.createElement('option');
-                option.value = choice;
-                option.textContent = choice;
-                input.appendChild(option);
+        },
+
+        post(endpoint, body) {
+            return this.request(CONFIG.API_BASE + endpoint, {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body:    JSON.stringify(body),
             });
-        } else {
-            input = document.createElement('input');
-            input.className = 'cdw-input';
+        },
 
-            switch (fieldData.type) {
-                case 'email':
-                    input.type = 'email';
-                    input.placeholder = 'exemple@email.com';
-                    input.autocomplete = 'email';
-                    break;
-                case 'number':
-                    input.type = 'number';
-                    input.placeholder = 'Entrez un nombre';
-                    break;
-                default:
-                    input.type = 'text';
-                    input.placeholder = fieldData.placeholder || 'Entrez ' + (fieldData.label || fieldData.name).toLowerCase();
-                    input.autocomplete = 'off';
+        get(endpoint) {
+            return this.request(CONFIG.API_BASE + endpoint, { method: 'GET' });
+        },
+    };
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PORTAL API
+    // Appels métier : chaque méthode mappe 1-pour-1 un endpoint du portail.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const PortalApi = {
+        provision(publicKey) {
+            return Api.get(`provision/?public_key=${encodeURIComponent(publicKey)}`);
+        },
+
+        recognize(publicKey, macAddress, clientToken = null) {
+            const body = { public_key: publicKey, mac_address: macAddress };
+            if (clientToken) body.client_token = clientToken;
+            return Api.post('recognize/', body);
+        },
+
+        submit(publicKey, macAddress, payload, clientToken, identityConfirmed = false) {
+            return Api.post('submit/', {
+                public_key:   publicKey,
+                mac_address:  macAddress,
+                payload,
+                client_token: clientToken,
+                ...(identityConfirmed && { identity_confirmed: true }),
+            });
+        },
+
+        confirm(clientToken, code) {
+            return Api.post('confirm/', { client_token: clientToken, code });
+        },
+
+        resend(clientToken) {
+            return Api.post('resend/', { client_token: clientToken });
+        },
+    };
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // DEVICE DETECTION
+    // Résolution de la clé publique et de l'adresse MAC du client.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const MAC_REGEX = /^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$/;
+
+    const Device = {
+        _normalize: (mac) => mac.toUpperCase().replace(/-/g, ':'),
+        _isValid:   (mac) => MAC_REGEX.test(mac),
+
+        _scriptTag() {
+            return document.currentScript
+                ?? document.querySelector('script[data-public-key]')
+                ?? null;
+        },
+
+        _urlParam(name) {
+            const match = new RegExp(`[?&]${name}=([^&]*)`, 'i').exec(window.location.search);
+            return match ? decodeURIComponent(match[1]) : null;
+        },
+
+        resolvePublicKey(options = {}) {
+            const tag = this._scriptTag();
+            return (
+                options.public_key                           ??
+                tag?.getAttribute('data-public-key')         ??
+                this._urlParam('public_key')                 ??
+                null
+            );
+        },
+
+        resolveMAC() {
+            // 1. Attribut data-mac (MikroTik, OpenNDS via template serveur)
+            const tag     = this._scriptTag();
+            const rawAttr = tag?.getAttribute('data-mac');
+
+            if (rawAttr && rawAttr !== '$(mac)') {
+                const normalized = this._normalize(rawAttr);
+                if (this._isValid(normalized)) {
+                    Log.info('MAC depuis data-mac :', normalized);
+                    return normalized;
+                }
             }
-        }
 
-        input.name = fieldData.name;
-        input.id = 'cdw-field-' + fieldData.name;
-        if (fieldData.required) input.required = true;
+            // 2. Paramètres URL (UniFi, Coova-Chilli, Meraki, Aruba…)
+            for (const param of CONFIG.MAC_URL_PARAMS) {
+                const val = this._urlParam(param);
+                if (!val) continue;
+                const normalized = this._normalize(val);
+                if (this._isValid(normalized)) {
+                    Log.info(`MAC depuis ?${param}= :`, normalized);
+                    return normalized;
+                }
+            }
 
-        field.appendChild(input);
+            Log.warn(
+                'Adresse MAC introuvable.\n' +
+                '  → MikroTik / OpenNDS : ajoutez data-mac="$(mac)" sur <script>.\n' +
+                '  → UniFi / Coova-Chilli / Meraki : vérifiez le paramètre MAC dans la redirection.'
+            );
+            return null;
+        },
+    };
 
-        const fieldError = document.createElement('div');
-        fieldError.className = 'cdw-field-error';
-        fieldError.dataset.field = fieldData.name;
-        field.appendChild(fieldError);
 
-        return field;
-    }
+    // ─────────────────────────────────────────────────────────────────────────
+    // ASSET LOADER
+    // Chargement idempotent de feuilles de style et scripts externes.
+    // ─────────────────────────────────────────────────────────────────────────
 
-    function buildForm(schema, provisionData) {
-        const container = document.createElement('div');
-        container.appendChild(buildHeader(provisionData));
+    const Loader = {
+        style(url) {
+            if (document.querySelector(`link[href="${url}"]`)) return;
+            const link = Object.assign(document.createElement('link'), { rel: 'stylesheet', href: url });
+            document.head.appendChild(link);
+        },
 
-        const form = document.createElement('form');
-        form.className = 'cdw-form';
-        form.noValidate = true;
+        script(url) {
+            if (document.querySelector(`script[src="${url}"]`)) return Promise.resolve();
+            return new Promise((resolve, reject) => {
+                const s   = Object.assign(document.createElement('script'), { src: url });
+                s.onload  = resolve;
+                s.onerror = () => reject(new Error(`Impossible de charger : ${url}`));
+                document.head.appendChild(s);
+            });
+        },
+    };
 
-        const fields = schema.fields || [];
-        fields.forEach(function(fieldData) {
-            form.appendChild(buildFormField(fieldData));
-        });
 
-        const buttonLabel = (provisionData && provisionData.button_label) || 'Acceder au WiFi';
+    // ─────────────────────────────────────────────────────────────────────────
+    // DOM HELPERS
+    // Utilitaires DOM purs : pas d'état, pas d'effets de bord globaux.
+    // ─────────────────────────────────────────────────────────────────────────
 
-        const submitBtn = document.createElement('button');
-        submitBtn.type = 'submit';
-        submitBtn.className = 'cdw-submit';
-        submitBtn.textContent = buttonLabel;
-        form.appendChild(submitBtn);
+    const Dom = {
+        revealPage() {
+            document.body.style.visibility = '';
+            document.getElementById('cdw-fouc')?.remove();
+        },
 
-        container.appendChild(form);
-        return { container: container, form: form, submitBtn: submitBtn, buttonLabel: buttonLabel };
-    }
+        lockScroll() {
+            document.documentElement.style.overflow = 'hidden';
+            document.body.style.overflow = 'hidden';
+        },
 
-    function buildVerificationView(onComplete) {
-        const container = document.createElement('div');
-        container.className = 'cdw-verification';
+        unlockScroll() {
+            document.documentElement.style.overflow = '';
+            document.body.style.overflow = '';
+        },
 
-        const icon = document.createElement('div');
-        icon.className = 'cdw-verification-icon';
-        icon.textContent = '📱';
-        container.appendChild(icon);
+        /**
+         * Crée un élément HTML avec props et enfants en une seule passe.
+         * @param {string} tag
+         * @param {Object} [props]
+         * @param {...(HTMLElement|string|null)} children
+         */
+        el(tag, props = {}, ...children) {
+            const element = Object.assign(document.createElement(tag), props);
+            for (const child of children) {
+                if (child == null) continue;
+                element.append(typeof child === 'string' ? document.createTextNode(child) : child);
+            }
+            return element;
+        },
 
-        const title = document.createElement('h2');
-        title.className = 'cdw-verification-title';
-        title.textContent = 'Vérification requise';
-        container.appendChild(title);
+        /** Remplace tous les enfants d'un conteneur. */
+        replace(container, ...children) {
+            container.replaceChildren(...children.filter(Boolean));
+        },
+    };
 
-        const text = document.createElement('p');
-        text.className = 'cdw-verification-text';
-        text.textContent = 'Un code de vérification a été envoyé. Veuillez le saisir ci-dessous.';
-        container.appendChild(text);
 
-        const codeInputs = document.createElement('div');
-        codeInputs.className = 'cdw-code-inputs';
+    // ─────────────────────────────────────────────────────────────────────────
+    // STYLES
+    // Injection CSS unique et idempotente. Préfixe cdw- sur toutes les classes.
+    // ─────────────────────────────────────────────────────────────────────────
 
-        const errorZone = document.createElement('div');
-        errorZone.className = 'cdw-verification-error';
+    const Styles = {
+        inject() {
+            if (document.getElementById('cdw-styles')) return;
 
-        const spinnerZone = document.createElement('div');
-        spinnerZone.className = 'cdw-verification-spinner';
-        spinnerZone.innerHTML = '<span class="cdw-spinner" style="border-color:rgba(99,102,241,0.3);border-top-color:#6366f1;"></span>';
-        spinnerZone.style.display = 'none';
+            const Z = CONFIG.OVERLAY_Z_INDEX;
+            const D = CONFIG.ANIMATION_MS;
 
-        function showError(msg) {
-            errorZone.textContent = msg;
-            errorZone.classList.add('visible');
-            spinnerZone.style.display = 'none';
-            for (var j = 0; j < 6; j++) codeInputs.children[j].value = '';
-            codeInputs.children[0].focus();
-        }
+            const css = `
+                *{box-sizing:border-box}
+                #cdw-overlay{
+                    position:fixed;inset:0;
+                    background:linear-gradient(135deg,rgba(99,102,241,.1),rgba(139,92,246,.1)),rgba(0,0,0,.75);
+                    backdrop-filter:blur(8px);
+                    display:flex;align-items:center;justify-content:center;
+                    z-index:${Z};padding:20px;
+                    opacity:0;animation:cdw-fadeIn ${D}ms cubic-bezier(.4,0,.2,1) forwards;
+                }
+                @keyframes cdw-fadeIn{to{opacity:1}}
+                @keyframes cdw-fadeOut{to{opacity:0}}
+                @keyframes cdw-slideUp{
+                    from{opacity:0;transform:translateY(30px) scale(.95)}
+                    to{opacity:1;transform:translateY(0) scale(1)}
+                }
+                @keyframes cdw-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
+                @keyframes cdw-slideInRight{
+                    from{opacity:0;transform:translateX(100px)}
+                    to{opacity:1;transform:translateX(0)}
+                }
+                @keyframes cdw-spin{to{transform:rotate(360deg)}}
+                .cdw-modal{
+                    background:#fff;border-radius:20px;
+                    max-width:440px;width:100%;max-height:85vh;overflow:hidden;
+                    box-shadow:0 25px 50px -12px rgba(0,0,0,.4),0 0 0 1px rgba(0,0,0,.05);
+                    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;
+                    animation:cdw-slideUp ${D}ms cubic-bezier(.4,0,.2,1);
+                    display:flex;flex-direction:column;
+                }
+                .cdw-modal-content{overflow-y:auto;padding:32px 28px;flex:1}
+                .cdw-modal-content::-webkit-scrollbar{width:8px}
+                .cdw-modal-content::-webkit-scrollbar-track{background:transparent;margin:12px 0}
+                .cdw-modal-content::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:4px}
+                .cdw-modal-content::-webkit-scrollbar-thumb:hover{background:#9ca3af}
+                .cdw-header{text-align:center;margin-bottom:28px}
+                .cdw-brand{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:12px}
+                .cdw-logo{width:56px;height:56px;border-radius:50%;object-fit:cover;
+                    box-shadow:0 4px 12px rgba(0,0,0,.15);border:3px solid #fff;flex-shrink:0}
+                .cdw-business-name{font-size:22px;font-weight:700;color:#111827;margin:0;
+                    letter-spacing:-.02em;line-height:1.2;text-align:left;flex:1;word-break:break-word}
+                .cdw-cta{font-size:15px;color:#6b7280;margin:0;line-height:1.5}
+                .cdw-form{display:flex;flex-direction:column;gap:18px}
+                .cdw-field{display:flex;flex-direction:column;gap:8px}
+                .cdw-label{font-size:14px;font-weight:600;color:#374151;display:flex;align-items:center;gap:4px}
+                .cdw-required{color:#ef4444;font-size:16px}
+                .cdw-input,.cdw-select{
+                    width:100%;padding:12px 16px;border:2px solid #e5e7eb;border-radius:12px;
+                    font-size:15px;background:#f9fafb;color:#111827;
+                    transition:all .2s cubic-bezier(.4,0,.2,1);font-family:inherit;
+                }
+                .cdw-input::placeholder{color:#9ca3af}
+                .cdw-input:hover,.cdw-select:hover{border-color:#d1d5db;background:#fff}
+                .cdw-input:focus,.cdw-select:focus{
+                    outline:none;border-color:#6366f1;background:#fff;
+                    box-shadow:0 0 0 4px rgba(99,102,241,.1);
+                }
+                .cdw-input:disabled,.cdw-select:disabled{background:#f3f4f6;cursor:not-allowed;opacity:.6}
+                .cdw-checkbox-wrapper{
+                    display:flex;align-items:flex-start;gap:12px;padding:12px;
+                    background:#f9fafb;border-radius:12px;border:2px solid #e5e7eb;
+                    transition:all .2s;cursor:pointer;
+                }
+                .cdw-checkbox-wrapper:hover{border-color:#d1d5db;background:#fff}
+                .cdw-checkbox{width:20px;height:20px;cursor:pointer;margin-top:2px;flex-shrink:0}
+                .cdw-checkbox-label{flex:1;font-size:14px;color:#374151;line-height:1.5;cursor:pointer}
+                .cdw-submit{
+                    margin-top:8px;width:100%;padding:14px 24px;border:none;border-radius:12px;
+                    font-size:16px;font-weight:600;
+                    background:linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%);
+                    color:#fff;cursor:pointer;transition:all .2s ease;
+                    box-shadow:0 4px 12px rgba(99,102,241,.4);
+                }
+                .cdw-submit:hover:not(:disabled){box-shadow:0 6px 16px rgba(99,102,241,.5);transform:translateY(-1px)}
+                .cdw-submit:active:not(:disabled){transform:translateY(0)}
+                .cdw-submit:disabled{background:#9ca3af;cursor:not-allowed;box-shadow:none;transform:none}
+                .cdw-spinner{
+                    display:inline-block;width:16px;height:16px;
+                    border:2px solid rgba(255,255,255,.3);border-top-color:#fff;
+                    border-radius:50%;animation:cdw-spin .8s linear infinite;
+                    margin-right:8px;vertical-align:middle;
+                }
+                .cdw-toast{
+                    position:fixed;top:20px;right:20px;max-width:400px;
+                    padding:16px 20px;border-radius:12px;font-size:14px;
+                    display:flex;align-items:flex-start;gap:12px;
+                    z-index:${Z + 1};box-shadow:0 10px 25px rgba(0,0,0,.2);
+                    animation:cdw-slideInRight .3s ease;
+                }
+                .cdw-toast-icon{
+                    flex-shrink:0;width:24px;height:24px;border-radius:50%;
+                    display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;
+                }
+                .cdw-toast-content{flex:1;line-height:1.5}
+                .cdw-toast-error{background:#fef2f2;border:2px solid #fecaca;color:#991b1b}
+                .cdw-toast-error .cdw-toast-icon{background:#dc2626;color:#fff}
+                .cdw-toast-success{background:#f0fdf4;border:2px solid #bbf7d0;color:#166534}
+                .cdw-toast-success .cdw-toast-icon{background:#22c55e;color:#fff}
+                .cdw-toast-info{background:#eff6ff;border:2px solid #bfdbfe;color:#1e40af}
+                .cdw-toast-info .cdw-toast-icon{background:#3b82f6;color:#fff}
+                .cdw-message{
+                    padding:14px 16px;border-radius:12px;font-size:14px;
+                    margin-bottom:16px;display:flex;align-items:flex-start;gap:12px;line-height:1.5;
+                }
+                .cdw-message-icon{
+                    flex-shrink:0;width:20px;height:20px;border-radius:50%;
+                    display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;
+                }
+                .cdw-message-content{flex:1}
+                .cdw-message-error{background:#fef2f2;border:2px solid #fecaca;color:#991b1b}
+                .cdw-message-error .cdw-message-icon{background:#dc2626;color:#fff}
+                .cdw-message-success{background:#f0fdf4;border:2px solid #bbf7d0;color:#166534}
+                .cdw-message-success .cdw-message-icon{background:#22c55e;color:#fff}
+                .cdw-message-info{background:#eff6ff;border:2px solid #bfdbfe;color:#1e40af}
+                .cdw-message-info .cdw-message-icon{background:#3b82f6;color:#fff}
+                .cdw-verification{text-align:center;padding:24px 0}
+                .cdw-verification-icon{
+                    width:64px;height:64px;margin:0 auto 16px;
+                    background:linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%);
+                    border-radius:50%;display:flex;align-items:center;justify-content:center;
+                    color:#fff;font-size:32px;animation:cdw-pulse 2s infinite;
+                }
+                .cdw-verification-title{font-size:20px;font-weight:700;color:#111827;margin:0 0 8px}
+                .cdw-verification-text{font-size:14px;color:#6b7280;margin:0 0 24px;line-height:1.6}
+                .cdw-code-inputs{display:flex;gap:12px;justify-content:center;margin-bottom:24px}
+                .cdw-code-input{
+                    width:52px;height:60px;font-size:24px;font-weight:700;
+                    text-align:center;border:2px solid #e5e7eb;border-radius:12px;
+                    background:#f9fafb;color:#111827;transition:all .2s;
+                }
+                .cdw-code-input:focus{
+                    outline:none;border-color:#6366f1;background:#fff;
+                    box-shadow:0 0 0 4px rgba(99,102,241,.1);
+                }
+                .cdw-resend-link{
+                    display:inline-block;color:#6366f1;text-decoration:none;
+                    font-size:14px;font-weight:600;margin-top:16px;transition:color .2s;cursor:pointer;
+                }
+                .cdw-resend-link:hover:not(.cdw-disabled){color:#4f46e5;text-decoration:underline}
+                .cdw-resend-link.cdw-disabled{color:#9ca3af;cursor:not-allowed;text-decoration:none}
+                .cdw-identity-confirm{text-align:center;padding:16px 0}
+                .cdw-identity-msg{font-size:15px;color:#374151;margin:0 0 20px;line-height:1.6}
+                .cdw-identity-actions{display:flex;flex-direction:column;gap:12px}
+                .cdw-btn{
+                    width:100%;padding:12px 24px;border-radius:12px;font-size:15px;
+                    font-weight:600;cursor:pointer;border:2px solid transparent;transition:all .2s;
+                }
+                .cdw-btn-primary{background:#6366f1;color:#fff;border-color:#6366f1}
+                .cdw-btn-primary:hover{background:#4f46e5;border-color:#4f46e5}
+                .cdw-btn-secondary{background:#fff;color:#374151;border-color:#e5e7eb}
+                .cdw-btn-secondary:hover{border-color:#d1d5db;background:#f9fafb}
+                .cdw-field-error,.cdw-phone-error,.cdw-verification-error{
+                    font-size:13px;color:#dc2626;margin-top:4px;display:none;
+                }
+                .cdw-field-error.visible,.cdw-phone-error.visible,.cdw-verification-error.visible{display:block}
+                .cdw-verification-error{margin-top:8px;margin-bottom:4px;min-height:18px}
+                .cdw-phone-error{margin-top:6px}
+                .cdw-verification-spinner{margin-top:12px;text-align:center}
+                .cdw-verification-spinner .cdw-spinner{width:22px;height:22px;border-width:3px}
+                .iti{width:100%}
+                .iti__input,.iti input[type=tel]{
+                    width:100%!important;padding:12px 16px!important;padding-left:58px!important;
+                    border:2px solid #e5e7eb!important;border-radius:12px!important;
+                    font-size:15px!important;background:#f9fafb!important;color:#111827!important;
+                    transition:all .2s cubic-bezier(.4,0,.2,1)!important;
+                    height:auto!important;font-family:inherit!important;
+                }
+                .iti__input:focus,.iti input[type=tel]:focus{
+                    outline:none!important;border-color:#6366f1!important;background:#fff!important;
+                    box-shadow:0 0 0 4px rgba(99,102,241,.1)!important;
+                }
+                .iti__selected-dial-code{display:none!important}
+                .iti__dropdown-content{z-index:${Z + 10}!important;max-height:220px!important}
+                .iti__country-list{
+                    border-radius:12px!important;box-shadow:0 10px 25px rgba(0,0,0,.15)!important;
+                    border:1px solid #e5e7eb!important;max-height:200px!important;overflow-y:auto!important;
+                }
+                .iti__search-input{
+                    padding:10px 14px!important;font-size:14px!important;height:42px!important;
+                    border-bottom:1px solid #e5e7eb!important;width:100%!important;
+                    box-sizing:border-box!important;outline:none!important;
+                }
+                .iti__dial-code{color:#6366f1!important}
+                @media(max-width:480px){
+                    .cdw-modal-content{padding:24px 20px}
+                    .cdw-business-name{font-size:18px}
+                    .cdw-logo{width:48px;height:48px}
+                    .cdw-code-input{width:44px;height:52px;font-size:20px}
+                    .cdw-toast{left:20px;right:20px;max-width:none}
+                }
+            `;
 
-        function setLoading(loading) {
-            spinnerZone.style.display = loading ? 'block' : 'none';
-            errorZone.classList.remove('visible');
-            for (var j = 0; j < 6; j++) codeInputs.children[j].disabled = loading;
-        }
+            document.head.appendChild(
+                Object.assign(document.createElement('style'), { id: 'cdw-styles', textContent: css })
+            );
+        },
+    };
 
-        for (var i = 0; i < 6; i++) {
-            (function(idx) {
-                const input = document.createElement('input');
-                input.type = 'text';
-                input.className = 'cdw-code-input';
-                input.maxLength = 1;
-                input.pattern = '[0-9]';
-                input.inputMode = 'numeric';
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // UI — COMPOSANTS ATOMIQUES
+    // Fonctions pures retournant des éléments DOM. Aucun effet de bord.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const UI = {
+
+        /** Écran de chargement plein écran affiché pendant l'init. */
+        loadingScreen() {
+            const el = Dom.el('div', { id: 'cdw-loading-screen' });
+            el.style.cssText = [
+                'position:fixed','inset:0',
+                `z-index:${CONFIG.OVERLAY_Z_INDEX + 1}`,
+                'display:flex','align-items:center','justify-content:center',
+                'background:linear-gradient(135deg,rgba(99,102,241,.1),rgba(139,92,246,.1)),rgba(0,0,0,.65)',
+                'backdrop-filter:blur(8px)',
+                'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
+            ].join(';');
+
+            el.appendChild(Dom.el('div', { style: 'display:flex;flex-direction:column;align-items:center;gap:20px' },
+                Dom.el('div', {
+                    style: 'width:48px;height:48px;border:4px solid rgba(255,255,255,.25);' +
+                           'border-top-color:#fff;border-radius:50%;animation:cdw-spin .8s linear infinite',
+                }),
+                Dom.el('p', {
+                    style: 'color:rgba(255,255,255,.9);font-size:15px;font-weight:500;margin:0',
+                    textContent: 'Connexion en cours\u2026',
+                }),
+            ));
+
+            document.body.appendChild(el);
+            return el;
+        },
+
+        removeLoadingScreen(el) {
+            if (!el?.parentNode) return;
+            el.style.transition = 'opacity .25s ease';
+            el.style.opacity = '0';
+            setTimeout(() => el.parentNode?.removeChild(el), 260);
+        },
+
+        overlay() {
+            return Dom.el('div', { id: 'cdw-overlay' });
+        },
+
+        modal() {
+            const content = Dom.el('div', { className: 'cdw-modal-content' });
+            const modal   = Dom.el('div', { className: 'cdw-modal' }, content);
+            return { modal, content };
+        },
+
+        toast(type, text) {
+            document.querySelector('.cdw-toast')?.remove();
+            const ICONS = { error: '!', success: '✓', info: 'i' };
+
+            const el = Dom.el('div', { className: `cdw-toast cdw-toast-${type}` },
+                Dom.el('div', { className: 'cdw-toast-icon', textContent: ICONS[type] ?? 'i' }),
+                Dom.el('div', { className: 'cdw-toast-content', textContent: text }),
+            );
+
+            document.body.appendChild(el);
+            setTimeout(() => {
+                el.style.animation = 'cdw-fadeOut .3s ease';
+                setTimeout(() => el.remove(), 300);
+            }, CONFIG.TOAST_DURATION_MS);
+        },
+
+        inlineMessage(container, type, text) {
+            container.querySelector('.cdw-message')?.remove();
+            const ICONS = { error: '!', success: '✓', info: 'i' };
+            container.insertBefore(
+                Dom.el('div', { className: `cdw-message cdw-message-${type}` },
+                    Dom.el('div', { className: 'cdw-message-icon', textContent: ICONS[type] ?? 'i' }),
+                    Dom.el('div', { className: 'cdw-message-content', textContent: text }),
+                ),
+                container.firstChild,
+            );
+        },
+
+        header(provision) {
+            const owner        = provision?.owner ?? {};
+            const logoUrl      = provision?.logo_url ?? owner.logo_url ?? owner.logo ?? null;
+            const businessName = provision?.title ?? owner.name ?? owner.business_name ?? 'WiFi Public';
+            const description  = provision?.description ?? 'Partagez vos coordonnées pour profiter du WiFi gratuit';
+
+            return Dom.el('div', { className: 'cdw-header' },
+                Dom.el('div', { className: 'cdw-brand' },
+                    logoUrl ? Dom.el('img', { src: logoUrl, className: 'cdw-logo', alt: businessName }) : null,
+                    Dom.el('div', { className: 'cdw-business-name', textContent: businessName }),
+                ),
+                Dom.el('p', { className: 'cdw-cta', textContent: description }),
+            );
+        },
+
+        _fieldLabel(fieldData) {
+            return Dom.el('label', { className: 'cdw-label', htmlFor: `cdw-field-${fieldData.name}` },
+                Dom.el('span', { textContent: fieldData.label ?? fieldData.name }),
+                fieldData.required ? Dom.el('span', { className: 'cdw-required', textContent: '*' }) : null,
+            );
+        },
+
+        _booleanField(fieldData) {
+            return Dom.el('div', { className: 'cdw-field' },
+                Dom.el('label', { className: 'cdw-checkbox-wrapper' },
+                    Dom.el('input', { type: 'checkbox', name: fieldData.name,
+                        className: 'cdw-checkbox', id: `cdw-field-${fieldData.name}` }),
+                    Dom.el('span', { className: 'cdw-checkbox-label',
+                        textContent: fieldData.label ?? fieldData.name }),
+                ),
+            );
+        },
+
+        _phoneField(fieldData) {
+            const error = Dom.el('div', { className: 'cdw-field-error cdw-phone-error',
+                textContent: 'Numéro de téléphone invalide' });
+            error.dataset.field = fieldData.name;
+            return Dom.el('div', { className: 'cdw-field' },
+                this._fieldLabel(fieldData),
+                Dom.el('input', { id: `cdw-field-${fieldData.name}`, name: fieldData.name,
+                    type: 'tel', className: 'cdw-input cdw-phone-input', required: !!fieldData.required }),
+                error,
+            );
+        },
+
+        _selectField(fieldData) {
+            const sel = Dom.el('select', {
+                className: 'cdw-select', name: fieldData.name,
+                id: `cdw-field-${fieldData.name}`, required: !!fieldData.required,
+            });
+            sel.appendChild(Dom.el('option', { value: '', textContent: 'Sélectionnez une option',
+                disabled: true, selected: true }));
+            (fieldData.choices ?? []).forEach((c) =>
+                sel.appendChild(Dom.el('option', { value: c, textContent: c }))
+            );
+            return sel;
+        },
+
+        _inputField(fieldData) {
+            const TYPE_MAP = {
+                email:  { type: 'email',  placeholder: 'exemple@email.com', autocomplete: 'email' },
+                number: { type: 'number', placeholder: 'Entrez un nombre' },
+            };
+            const cfg = TYPE_MAP[fieldData.type] ?? {
+                type: 'text',
+                placeholder: fieldData.placeholder
+                    ?? `Entrez ${(fieldData.label ?? fieldData.name).toLowerCase()}`,
+                autocomplete: 'off',
+            };
+            return Dom.el('input', { ...cfg, className: 'cdw-input',
+                name: fieldData.name, id: `cdw-field-${fieldData.name}`,
+                required: !!fieldData.required });
+        },
+
+        formField(fieldData) {
+            if (fieldData.type === 'boolean') return this._booleanField(fieldData);
+            if (fieldData.type === 'phone')   return this._phoneField(fieldData);
+
+            const inputEl = fieldData.type === 'choice'
+                ? this._selectField(fieldData)
+                : this._inputField(fieldData);
+
+            const error = Dom.el('div', { className: 'cdw-field-error' });
+            error.dataset.field = fieldData.name;
+
+            return Dom.el('div', { className: 'cdw-field' },
+                this._fieldLabel(fieldData), inputEl, error,
+            );
+        },
+
+        form(schema, provision) {
+            const buttonLabel = provision?.button_label ?? 'Accéder au WiFi';
+            const submitBtn   = Dom.el('button', {
+                type: 'submit', className: 'cdw-submit', textContent: buttonLabel,
+            });
+
+            const form = Dom.el('form', { className: 'cdw-form', noValidate: true },
+                ...(schema.fields ?? []).map((f) => this.formField(f)),
+                submitBtn,
+            );
+
+            const container = Dom.el('div', {}, this.header(provision), form);
+            return { container, form, submitBtn, buttonLabel };
+        },
+
+        verificationView(onComplete) {
+            const errorZone   = Dom.el('div', { className: 'cdw-verification-error' });
+            const spinnerZone = Dom.el('div', { className: 'cdw-verification-spinner',
+                style: 'display:none' },
+                Dom.el('span', { className: 'cdw-spinner',
+                    style: 'border-color:rgba(99,102,241,.3);border-top-color:#6366f1' }),
+            );
+            const codeInputs = Dom.el('div', { className: 'cdw-code-inputs' });
+
+            const showError = (msg) => {
+                errorZone.textContent = msg;
+                errorZone.classList.add('visible');
+                spinnerZone.style.display = 'none';
+                this.clearOtpInputs(codeInputs);
+            };
+
+            const setLoading = (loading) => {
+                spinnerZone.style.display = loading ? 'block' : 'none';
+                errorZone.classList.remove('visible');
+                Array.from(codeInputs.children).forEach((inp) => { inp.disabled = loading; });
+            };
+
+            for (let idx = 0; idx < CONFIG.OTP_LENGTH; idx++) {
+                const input = Dom.el('input', {
+                    type: 'text', className: 'cdw-code-input',
+                    maxLength: 1, pattern: '[0-9]', inputMode: 'numeric',
+                });
                 input.dataset.index = idx;
 
-                input.addEventListener('input', function(e) {
+                input.addEventListener('input', (e) => {
                     e.target.value = e.target.value.replace(/\D/g, '');
                     errorZone.classList.remove('visible');
-
-                    if (e.target.value.length === 1) {
-                        if (idx < 5) {
-                            codeInputs.children[idx + 1].focus();
-                        } else {
-                            var code = '';
-                            for (var j = 0; j < 6; j++) code += codeInputs.children[j].value;
-                            if (code.length === 6 && onComplete) {
-                                setLoading(true);
-                                onComplete(code, showError, setLoading);
-                            }
-                        }
+                    if (e.target.value.length !== 1) return;
+                    if (idx < CONFIG.OTP_LENGTH - 1) {
+                        codeInputs.children[idx + 1].focus();
+                        return;
+                    }
+                    const code = Array.from(codeInputs.children).map((i) => i.value).join('');
+                    if (code.length === CONFIG.OTP_LENGTH) {
+                        setLoading(true);
+                        onComplete(code, showError, setLoading);
                     }
                 });
 
-                input.addEventListener('keydown', function(e) {
+                input.addEventListener('keydown', (e) => {
                     if (e.key === 'Backspace' && !e.target.value && idx > 0) {
                         codeInputs.children[idx - 1].focus();
                     }
                 });
 
                 codeInputs.appendChild(input);
-            })(i);
-        }
-
-        container.appendChild(codeInputs);
-        container.appendChild(errorZone);
-        container.appendChild(spinnerZone);
-
-        const resendLink = document.createElement('a');
-        resendLink.href = '#';
-        resendLink.className = 'cdw-resend-link';
-        resendLink.textContent = 'Renvoyer le code';
-        container.appendChild(resendLink);
-
-        return { container: container, codeInputs: codeInputs, resendLink: resendLink };
-    }
-
-    function setButtonLoading(button, loading, text) {
-        if (loading) {
-            button.disabled = true;
-            button.innerHTML = '<span class="cdw-spinner"></span>' + text;
-        } else {
-            button.disabled = false;
-            button.innerHTML = text;
-        }
-    }
-
-    function closeModal(overlay, callback) {
-        unlockScroll();
-        overlay.style.animation = 'cdw-fadeOut ' + CONFIG.ANIMATION_DURATION + 'ms ease';
-        setTimeout(function() {
-            overlay.remove();
-            if (callback) callback();
-        }, CONFIG.ANIMATION_DURATION);
-    }
-
-    // ============================================================================
-    // LOGIQUE PRINCIPALE
-    // ============================================================================
-
-    async function init(options) {
-        options = options || {};
-
-        const script = getCurrentScript();
-        const publicKey = options.public_key ||
-                         (script && script.getAttribute('data-public-key')) ||
-                         getURLParam('public_key');
-
-        if (!publicKey) {
-            console.error('[Widget] Cle publique manquante');
-            return;
-        }
-
-        const macAddress = getMacAddress();
-
-        if (!macAddress) {
-            console.error('[Widget] Impossible de demarrer : adresse MAC manquante.');
-            return;
-        }
-
-        injectStyles();
-
-        var loadingScreen = createLoadingScreen();
-
-        try {
-            const storedToken = Storage.get('token_' + publicKey);
-
-            const recognizeBody = { public_key: publicKey, mac_address: macAddress };
-            if (storedToken) recognizeBody.client_token = storedToken;
-
-            const provisionUrl = CONFIG.API_BASE + 'provision/?public_key=' + encodeURIComponent(publicKey);
-
-            const [recognizeResult, provisionData] = await Promise.all([
-                fetchAPI(CONFIG.API_BASE + 'recognize/', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(recognizeBody)
-                }).catch(function() {
-                    return { recognized: false, is_verified: false };
-                }),
-                fetchAPI(provisionUrl, { method: 'GET' })
-            ]);
-
-            if (provisionData.enable === false) {
-                console.log('[Widget] Formulaire desactive par l\'owner.');
-                removeLoadingScreen(loadingScreen);
-                revealPage();
-                return;
             }
 
-            const doubleOpt = provisionData.opt === true;
-
-            loadStyle(INTL_TEL_INPUT_CSS_URL);
-            const itiLoadPromise = loadScript(INTL_TEL_INPUT_JS_URL);
-
-            if (recognizeResult.recognized) {
-                console.log('[Widget] Client reconnu');
-
-                if (recognizeResult.client_token) {
-                    Storage.set('token_' + publicKey, recognizeResult.client_token);
-                }
-
-                if (doubleOpt && !recognizeResult.is_verified) {
-                    const modalData = createModal();
-                    const overlay = createOverlay();
-
-                    const verificationData = buildVerificationView(
-                        async function(code, showError, setLoading) {
-                            try {
-                                await fetchAPI(CONFIG.API_BASE + 'confirm/', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({
-                                        client_token: recognizeResult.client_token,
-                                        code: code
-                                    })
-                                });
-                                showToast('success', 'Compte verifie avec succes !');
-                                closeModal(overlay);
-                            } catch (error) {
-                                if (error.status === 400 || error.status === 422) {
-                                    showError(error.message || 'Code incorrect, veuillez reessayer.');
-                                } else {
-                                    closeModal(overlay);
-                                }
-                            }
-                        }
-                    );
-
-                    modalData.content.appendChild(buildHeader(provisionData));
-                    modalData.content.appendChild(verificationData.container);
-                    overlay.appendChild(modalData.modal);
-                    document.body.appendChild(overlay);
-                    lockScroll();
-                    revealPage();
-                    removeLoadingScreen(loadingScreen);
-
-                    showToast('info', 'Veuillez verifier votre compte pour continuer');
-                    verificationData.codeInputs.children[0].focus();
-                    setupResendLink(verificationData.resendLink, recognizeResult.client_token, modalData.content, verificationData.codeInputs);
-
-                } else {
-                    removeLoadingScreen(loadingScreen);
-                    revealPage();
-                }
-
-                return;
-            }
-
-            console.log('[Widget] Chargement du formulaire...');
-
-            const hasPhone = ((provisionData.schema && provisionData.schema.fields) || []).some(function(f) {
-                return f.type === 'phone';
+            const resendLink = Dom.el('a', {
+                href: '#', className: 'cdw-resend-link', textContent: 'Renvoyer le code',
             });
-            if (hasPhone) {
-                await itiLoadPromise;
-            }
 
-            const modalData = createModal();
-            const overlay = createOverlay();
-            const formData = buildForm(
-                provisionData.schema || { fields: [] },
-                provisionData
+            const container = Dom.el('div', { className: 'cdw-verification' },
+                Dom.el('div', { className: 'cdw-verification-icon', textContent: '📱' }),
+                Dom.el('h2', { className: 'cdw-verification-title', textContent: 'Vérification requise' }),
+                Dom.el('p', { className: 'cdw-verification-text',
+                    textContent: 'Un code de vérification a été envoyé. Veuillez le saisir ci-dessous.' }),
+                codeInputs, errorZone, spinnerZone, resendLink,
             );
 
-            modalData.content.appendChild(formData.container);
-            overlay.appendChild(modalData.modal);
-            document.body.appendChild(overlay);
-            lockScroll();
-            revealPage();
-            removeLoadingScreen(loadingScreen);
+            return { container, codeInputs, resendLink };
+        },
 
-            const phoneInput = formData.form.querySelector('.cdw-phone-input');
-            let iti = null;
+        identityConfirmView(onConfirm, onDeny) {
+            const btnYes = Dom.el('button', { type: 'button', className: 'cdw-btn cdw-btn-primary',
+                textContent: "Oui, c'est moi" });
+            const btnNo  = Dom.el('button', { type: 'button', className: 'cdw-btn cdw-btn-secondary',
+                textContent: "Non, ce n'est pas moi" });
+            btnYes.addEventListener('click', onConfirm);
+            btnNo.addEventListener('click', onDeny);
+            return Dom.el('div', { className: 'cdw-identity-confirm' },
+                Dom.el('p', { className: 'cdw-identity-msg',
+                    textContent: 'Ce contact est déjà associé à un compte. Est-ce bien vous ?' }),
+                Dom.el('div', { className: 'cdw-identity-actions' }, btnYes, btnNo),
+            );
+        },
 
-            if (phoneInput && window.intlTelInput) {
-                iti = window.intlTelInput(phoneInput, {
-                    initialCountry: 'auto',
-                    geoIpLookup: function(callback) {
-                        var timeout = new Promise(function(_, reject) {
-                            setTimeout(function() { reject(new Error('timeout')); }, 2000);
-                        });
-                        Promise.race([
-                            fetch('https://ipapi.co/json')
-                                .then(function(res) { return res.json(); })
-                                .then(function(data) {
-                                    if (data && data.country_code) return data.country_code;
-                                    throw new Error('no_country');
-                                }),
-                            timeout
-                        ])
-                        .then(function(code) { callback(code); })
-                        .catch(function() {
-                            callback('bj');
-                        });
-                    },
-                    countryOrder: ['bj', 'ci', 'sn', 'tg', 'ml', 'bf', 'ne', 'fr', 'be', 'ch', 'ca', 'us', 'gb',
-                                   'dz', 'ao', 'bw', 'cd', 'cg', 'cm', 'cv', 'dj', 'eg', 'er', 'et',
-                                   'ga', 'gh', 'gm', 'gn', 'gq', 'gw', 'ke', 'km', 'lr', 'ls', 'ly', 'ma',
-                                   'mg', 'mr', 'mu', 'mw', 'mz', 'na', 'ng', 'rw', 'sc', 'sd', 'sl', 'so',
-                                   'ss', 'st', 'sz', 'td', 'tn', 'tz', 'ug', 'za', 'zm', 'zw'],
-                    separateDialCode: false,
-                    showSelectedDialCode: false,
-                    allowDropdown: true
-                });
+        clearOtpInputs(codeInputs) {
+            Array.from(codeInputs.children).forEach((inp) => { inp.value = ''; inp.disabled = false; });
+            codeInputs.children[0]?.focus();
+        },
 
-                phoneInput.addEventListener('open:countrydropdown', function() {
-                    requestAnimationFrame(function() {
-                        var dropdown = document.querySelector('.iti__dropdown-content');
-                        if (!dropdown) return;
-                        var rect = dropdown.getBoundingClientRect();
-                        var viewportH = window.innerHeight;
-                        if (rect.bottom > viewportH - 10) {
-                            var overflow = rect.bottom - viewportH + 10;
-                            dropdown.style.top = (parseFloat(dropdown.style.top || rect.top) - overflow) + 'px';
-                        }
-                    });
-                });
+        setButtonLoading(btn, loading, label) {
+            btn.disabled = loading;
+            btn.innerHTML = loading ? `<span class="cdw-spinner"></span>${label}` : label;
+        },
 
-                var phoneErrorEl = phoneInput.closest('.cdw-field') &&
-                                   phoneInput.closest('.cdw-field').querySelector('.cdw-phone-error');
+        showFieldErrors(form, payloadErrors) {
+            let hasErrors = false;
+            for (const [field, msg] of Object.entries(payloadErrors)) {
+                const el = form.querySelector(`.cdw-field-error[data-field="${field}"]`);
+                if (!el) continue;
+                el.textContent = Array.isArray(msg) ? msg.join(' ') : msg;
+                el.classList.add('visible');
+                hasErrors = true;
+            }
+            return hasErrors;
+        },
 
-                phoneInput.addEventListener('blur', function() {
-                    if (phoneErrorEl && phoneInput.value) {
-                        if (!iti.isValidNumber()) {
-                            phoneErrorEl.classList.add('visible');
-                        } else {
-                            phoneErrorEl.classList.remove('visible');
-                        }
+        clearFieldErrors(form) {
+            form.querySelectorAll('.cdw-field-error').forEach((el) => {
+                el.textContent = '';
+                el.classList.remove('visible');
+            });
+        },
+    };
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PHONE CONTROLLER
+    // Initialisation et validation intl-tel-input.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const PhoneController = {
+        async _detectCountry() {
+            try {
+                const data = await Promise.race([
+                    fetch('https://ipapi.co/json').then((r) => r.json()),
+                    new Promise((_, reject) =>
+                        setTimeout(() => reject(new Error('timeout')), CONFIG.GEO_TIMEOUT_MS)
+                    ),
+                ]);
+                return data?.country_code ?? 'bj';
+            } catch {
+                return 'bj';
+            }
+        },
+
+        async init(phoneInput) {
+            if (!phoneInput || !window.intlTelInput) return null;
+
+            const iti = window.intlTelInput(phoneInput, {
+                initialCountry:       'auto',
+                geoIpLookup:          (cb) => this._detectCountry().then(cb),
+                countryOrder:         CONFIG.COUNTRY_ORDER,
+                separateDialCode:     false,
+                showSelectedDialCode: false,
+                allowDropdown:        true,
+            });
+
+            phoneInput.addEventListener('open:countrydropdown', () => {
+                requestAnimationFrame(() => {
+                    const dropdown = document.querySelector('.iti__dropdown-content');
+                    if (!dropdown) return;
+                    const overflow = dropdown.getBoundingClientRect().bottom - window.innerHeight + 10;
+                    if (overflow > 0) {
+                        dropdown.style.top = `${parseFloat(dropdown.style.top || '0') - overflow}px`;
                     }
                 });
+            });
 
-                phoneInput.addEventListener('input', function() {
-                    if (phoneErrorEl) phoneErrorEl.classList.remove('visible');
-                });
+            return iti;
+        },
+
+        attachValidation(phoneInput, iti) {
+            if (!phoneInput || !iti) return;
+            const errorEl = phoneInput.closest('.cdw-field')?.querySelector('.cdw-phone-error');
+            if (!errorEl) return;
+            phoneInput.addEventListener('blur', () => {
+                if (!phoneInput.value) return;
+                errorEl.classList.toggle('visible', !iti.isValidNumber());
+            });
+            phoneInput.addEventListener('input', () => errorEl.classList.remove('visible'));
+        },
+
+        getValue(input, iti) {
+            return iti ? iti.getNumber() : (input?.value ?? null);
+        },
+
+        validate(form, iti) {
+            if (!iti || iti.isValidNumber()) return true;
+            const errorEl = form.querySelector('.cdw-phone-error');
+            if (errorEl) {
+                errorEl.textContent = 'Veuillez saisir un numéro de téléphone valide.';
+                errorEl.classList.add('visible');
             }
+            return false;
+        },
+    };
 
-            function clearAllFieldErrors(form) {
-                form.querySelectorAll('.cdw-field-error').forEach(function(el) {
-                    el.textContent = '';
-                    el.classList.remove('visible');
-                });
-            }
 
-            function showFieldError(form, fieldName, message) {
-                var errorEl = form.querySelector('.cdw-field-error[data-field="' + fieldName + '"]');
-                if (errorEl) {
-                    errorEl.textContent = message;
-                    errorEl.classList.add('visible');
-                }
-            }
+    // ─────────────────────────────────────────────────────────────────────────
+    // RESEND CONTROLLER
+    // Gestion du lien "renvoyer le code" avec cooldown.
+    // ─────────────────────────────────────────────────────────────────────────
 
-            formData.form.addEventListener('submit', async function(event) {
-                event.preventDefault();
-                clearAllFieldErrors(formData.form);
+    const ResendController = {
+        attach(resendLink, clientToken, codeInputs) {
+            resendLink.addEventListener('click', async (e) => {
+                e.preventDefault();
+                if (resendLink.classList.contains('cdw-disabled')) return;
 
-                if (iti && !iti.isValidNumber()) {
-                    var phoneEl = formData.form.querySelector('.cdw-phone-error');
-                    if (phoneEl) {
-                        phoneEl.textContent = 'Veuillez saisir un numéro de téléphone valide.';
-                        phoneEl.classList.add('visible');
-                    } else {
-                        showMessage(formData.container, 'error', 'Veuillez saisir un numero de telephone valide.');
-                    }
-                    return;
-                }
-
-                if (!formData.form.checkValidity()) {
-                    formData.form.reportValidity();
-                    return;
-                }
-
-                setButtonLoading(formData.submitBtn, true, 'Envoi en cours...');
-
-                const formDataObj = new FormData(formData.form);
-                const payload = {};
-
-                for (let [key, value] of formDataObj.entries()) {
-                    const input = formData.form.querySelector('[name="' + key + '"]');
-
-                    if (input && input.classList.contains('cdw-phone-input') && iti) {
-                        payload[key] = iti.getNumber();
-                    } else if (input && input.type === 'checkbox') {
-                        payload[key] = input.checked;
-                    } else if (input && input.type === 'number') {
-                        payload[key] = value ? Number(value) : null;
-                    } else {
-                        payload[key] = value || null;
-                    }
-                }
+                resendLink.classList.add('cdw-disabled');
+                const label = resendLink.textContent;
+                resendLink.textContent = 'Envoi en cours…';
 
                 try {
-                    const submitBody = {
-                        public_key: publicKey,
-                        mac_address: macAddress,
-                        payload: payload,
-                        client_token: storedToken
-                    };
+                    await PortalApi.resend(clientToken);
+                    resendLink.textContent = label;
+                    UI.toast('success', 'Nouveau code envoyé');
+                    UI.clearOtpInputs(codeInputs);
+                    setTimeout(() => resendLink.classList.remove('cdw-disabled'), CONFIG.RESEND_COOLDOWN_MS);
+                } catch (err) {
+                    resendLink.classList.remove('cdw-disabled');
+                    resendLink.textContent = label;
+                    UI.toast('error', err.message);
+                }
+            });
+        },
+    };
 
-                    const result = await fetchAPI(CONFIG.API_BASE + 'submit/', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(submitBody)
-                    });
 
-                    if (result.client_token) {
-                        Storage.set('token_' + publicKey, result.client_token);
-                    }
+    // ─────────────────────────────────────────────────────────────────────────
+    // MODAL CONTROLLER
+    // Cycle de vie du modal : montage, animation, démontage.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const ModalController = {
+        mount(overlay, modal, content, loadingScreen) {
+            overlay.appendChild(modal);
+            document.body.appendChild(overlay);
+            Dom.lockScroll();
+            Dom.revealPage();
+            UI.removeLoadingScreen(loadingScreen);
+        },
+
+        dismiss(overlay, callback) {
+            Dom.unlockScroll();
+            overlay.style.animation = `cdw-fadeOut ${CONFIG.ANIMATION_MS}ms ease`;
+            setTimeout(() => { overlay.remove(); callback?.(); }, CONFIG.ANIMATION_MS);
+        },
+
+        showVerification(modalContent, provision, clientToken, { onSuccess, onClose }) {
+            const verif = UI.verificationView(async (code, showError) => {
+                try {
+                    await PortalApi.confirm(clientToken, code);
+                    onSuccess();
+                } catch (err) {
+                    (err.status === 400 || err.status === 422)
+                        ? showError(err.message ?? 'Code incorrect, veuillez réessayer.')
+                        : onClose();
+                }
+            });
+
+            Dom.replace(modalContent, UI.header(provision), verif.container);
+            verif.codeInputs.children[0]?.focus();
+            ResendController.attach(verif.resendLink, clientToken, verif.codeInputs);
+        },
+
+        showIdentityConflict(modalContent, provision, submitBody, { onClose, onRestore }) {
+            const view = UI.identityConfirmView(
+                async () => {
+                    try {
+                        const result = await PortalApi.submit(
+                            submitBody.public_key, submitBody.mac_address,
+                            submitBody.payload, submitBody.client_token, true
+                        );
+                        if (result.client_token) Storage.set(`token_${submitBody.public_key}`, result.client_token);
+                        UI.toast('success', 'Informations enregistrées avec succès.');
+                        onClose();
+                    } catch { onClose(); }
+                },
+                () => onRestore(),
+            );
+            Dom.replace(modalContent, UI.header(provision), view);
+        },
+    };
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // FORM CONTROLLER
+    // Sérialisation du formulaire et dispatch des résultats API.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const FormController = {
+        serialize(form, iti) {
+            const payload = {};
+            for (const [key, value] of new FormData(form).entries()) {
+                const input = form.querySelector(`[name="${key}"]`);
+                if (!input) continue;
+
+                if (input.classList.contains('cdw-phone-input')) {
+                    payload[key] = PhoneController.getValue(input, iti);
+                } else if (input.type === 'checkbox') {
+                    payload[key] = input.checked;
+                } else if (input.type === 'number') {
+                    payload[key] = value ? Number(value) : null;
+                } else {
+                    payload[key] = value || null;
+                }
+            }
+            return payload;
+        },
+
+        attachSubmitHandler({ formData, modalContent, overlay, provision, publicKey, macAddress, storedToken, iti, doubleOpt }) {
+            formData.form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                UI.clearFieldErrors(formData.form);
+
+                if (!PhoneController.validate(formData.form, iti)) return;
+                if (!formData.form.checkValidity()) { formData.form.reportValidity(); return; }
+
+                UI.setButtonLoading(formData.submitBtn, true, 'Envoi en cours…');
+
+                const payload    = this.serialize(formData.form, iti);
+                const submitBody = { public_key: publicKey, mac_address: macAddress,
+                    payload, client_token: storedToken };
+
+                const close = (msg) => {
+                    if (msg) UI.toast('success', msg);
+                    ModalController.dismiss(overlay);
+                };
+
+                try {
+                    const result = await PortalApi.submit(publicKey, macAddress, payload, storedToken);
+
+                    if (result.client_token) Storage.set(`token_${publicKey}`, result.client_token);
 
                     if (result.identity_conflict) {
-                        modalData.content.innerHTML = '';
-                        modalData.content.appendChild(buildHeader(provisionData));
-
-                        var confirmView = buildIdentityConfirmView(
-                            async function() {
-                                try {
-                                    const confirmResult = await fetchAPI(CONFIG.API_BASE + 'submit/', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify(Object.assign({}, submitBody, { identity_confirmed: true }))
-                                    });
-                                    if (confirmResult.client_token) {
-                                        Storage.set('token_' + publicKey, confirmResult.client_token);
-                                    }
-                                    showToast('success', 'Informations enregistrees avec succes.');
-                                    closeModal(overlay);
-                                } catch (err) {
-                                    closeModal(overlay);
-                                }
-                            },
-                            function() {
-                                modalData.content.innerHTML = '';
+                        ModalController.showIdentityConflict(modalContent, provision, submitBody, {
+                            onClose:   () => close(),
+                            onRestore: () => {
+                                Dom.replace(modalContent, formData.container);
                                 formData.form.reset();
-                                modalData.content.appendChild(formData.container);
-                                setButtonLoading(formData.submitBtn, false, formData.buttonLabel);
-                            }
-                        );
-
-                        modalData.content.appendChild(confirmView);
-
-                    } else if (doubleOpt && result.requires_verification) {
-                        modalData.content.innerHTML = '';
-
-                        const verificationData = buildVerificationView(
-                            async function(code, showError, setLoading) {
-                                try {
-                                    await fetchAPI(CONFIG.API_BASE + 'confirm/', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({
-                                            client_token: result.client_token,
-                                            code: code
-                                        })
-                                    });
-                                    showToast('success', 'Informations enregistrees avec succes !');
-                                    closeModal(overlay);
-                                } catch (error) {
-                                    if (error.status === 400 || error.status === 422) {
-                                        showError(error.message || 'Code incorrect, veuillez reessayer.');
-                                    } else {
-                                        closeModal(overlay);
-                                    }
-                                }
-                            }
-                        );
-
-                        modalData.content.appendChild(buildHeader(provisionData));
-                        modalData.content.appendChild(verificationData.container);
-
-                        if (result.message) showToast('info', result.message);
-
-                        verificationData.codeInputs.children[0].focus();
-                        setupResendLink(verificationData.resendLink, result.client_token, modalData.content, verificationData.codeInputs);
-
-                    } else {
-                        showToast('success', 'Merci ! Vos informations ont ete enregistrees.');
-                        closeModal(overlay);
-                    }
-
-                } catch (error) {
-                    if (!error.status || error.status >= 500) {
-                        closeModal(overlay);
+                                UI.setButtonLoading(formData.submitBtn, false, formData.buttonLabel);
+                            },
+                        });
                         return;
                     }
 
-                    setButtonLoading(formData.submitBtn, false, formData.buttonLabel);
-
-                    const payloadErrors = error.data && error.data.payload;
-
-                    if (error.status === 400 && payloadErrors && typeof payloadErrors === 'object' && !Array.isArray(payloadErrors)) {
-                        var hasFieldError = false;
-                        Object.keys(payloadErrors).forEach(function(fieldName) {
-                            var msg = payloadErrors[fieldName];
-                            if (Array.isArray(msg)) msg = msg.join(' ');
-                            showFieldError(formData.form, fieldName, msg);
-                            hasFieldError = true;
+                    if (doubleOpt && result.requires_verification) {
+                        if (result.message) UI.toast('info', result.message);
+                        ModalController.showVerification(modalContent, provision, result.client_token, {
+                            onSuccess: () => close('Informations enregistrées avec succès !'),
+                            onClose:   () => ModalController.dismiss(overlay),
                         });
-                        if (!hasFieldError) {
-                            showMessage(formData.container, 'error', 'Veuillez corriger les erreurs dans le formulaire.');
-                        }
-                    } else {
-                        let errorMessage = error.message || 'Une erreur est survenue';
-                        if (error.status === 404) {
-                            errorMessage = 'Service introuvable. Contactez l\'administrateur.';
-                        }
-                        showMessage(formData.container, 'error', errorMessage);
+                        return;
+                    }
+
+                    close('Merci ! Vos informations ont été enregistrées.');
+
+                } catch (err) {
+                    if (!err.status || err.status >= 500) { ModalController.dismiss(overlay); return; }
+
+                    UI.setButtonLoading(formData.submitBtn, false, formData.buttonLabel);
+
+                    const payloadErrors = err.data?.payload;
+                    const hasFieldErrors = (
+                        err.status === 400 &&
+                        payloadErrors &&
+                        typeof payloadErrors === 'object' &&
+                        !Array.isArray(payloadErrors) &&
+                        UI.showFieldErrors(formData.form, payloadErrors)
+                    );
+
+                    if (!hasFieldErrors) {
+                        UI.inlineMessage(formData.container, 'error',
+                            err.status === 404
+                                ? "Service introuvable. Contactez l'administrateur."
+                                : (err.message ?? 'Une erreur est survenue')
+                        );
                     }
                 }
             });
+        },
+    };
 
-        } catch (error) {
-            console.error('[Widget] Erreur d\'initialisation:', error);
-            removeLoadingScreen(loadingScreen);
-            revealPage();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ORCHESTRATEUR
+    // Point d'entrée unique. Séquence linéaire et lisible de bout en bout.
+    // Toute la logique métier est déléguée aux modules ci-dessus.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async function init(options = {}) {
+        const publicKey  = Device.resolvePublicKey(options);
+        const macAddress = Device.resolveMAC();
+
+        if (!publicKey)  { Log.error('Clé publique manquante.'); return; }
+        if (!macAddress) { Log.error('Adresse MAC introuvable.'); return; }
+
+        Styles.inject();
+        const loadingScreen = UI.loadingScreen();
+
+        try {
+            const storedToken = Storage.get(`token_${publicKey}`);
+
+            // Appels parallèles : reconnaissance client + configuration portail
+            const [recognizeResult, provision] = await Promise.all([
+                PortalApi.recognize(publicKey, macAddress, storedToken).catch(() =>
+                    ({ recognized: false, is_verified: false })
+                ),
+                PortalApi.provision(publicKey),
+            ]);
+
+            if (provision.enable === false) {
+                Log.info('Widget désactivé par le portail owner.');
+                return;
+            }
+
+            const doubleOpt = provision.opt === true;
+
+            Loader.style(CONFIG.ITI.CSS);
+            const itiScriptPromise = Loader.script(CONFIG.ITI.JS);
+
+            // Branche A : client reconnu
+            if (recognizeResult.recognized) {
+                Log.info('Client reconnu.');
+                if (recognizeResult.client_token) Storage.set(`token_${publicKey}`, recognizeResult.client_token);
+
+                if (doubleOpt && !recognizeResult.is_verified) {
+                    const { modal, content } = UI.modal();
+                    const overlay = UI.overlay();
+
+                    ModalController.showVerification(content, provision, recognizeResult.client_token, {
+                        onSuccess: () => { UI.toast('success', 'Compte vérifié avec succès !'); ModalController.dismiss(overlay); },
+                        onClose:   () => ModalController.dismiss(overlay),
+                    });
+
+                    ModalController.mount(overlay, modal, content, loadingScreen);
+                    UI.toast('info', 'Veuillez vérifier votre compte pour continuer.');
+                    return;
+                }
+
+                return; // Client déjà vérifié → accès direct
+            }
+
+            // Branche B : nouveau client → affichage du formulaire
+            Log.info('Nouveau client. Chargement du formulaire…');
+
+            const hasPhone = (provision.schema?.fields ?? []).some((f) => f.type === 'phone');
+            if (hasPhone) await itiScriptPromise;
+
+            const { modal, content } = UI.modal();
+            const overlay  = UI.overlay();
+            const formData = UI.form(provision.schema ?? { fields: [] }, provision);
+
+            content.appendChild(formData.container);
+            ModalController.mount(overlay, modal, content, loadingScreen);
+
+            const phoneInput = formData.form.querySelector('.cdw-phone-input');
+            const iti        = await PhoneController.init(phoneInput);
+            PhoneController.attachValidation(phoneInput, iti);
+
+            FormController.attachSubmitHandler({
+                formData, modalContent: content, overlay, provision,
+                publicKey, macAddress, storedToken, iti, doubleOpt,
+            });
+
+        } catch (err) {
+            Log.error("Erreur d'initialisation :", err);
         } finally {
-            removeLoadingScreen(loadingScreen);
-            unlockScroll();
-            revealPage();
+            UI.removeLoadingScreen(loadingScreen);
+            Dom.unlockScroll();
+            Dom.revealPage();
         }
     }
 
-    function setupResendLink(resendLink, clientToken, container, codeInputs) {
-        resendLink.addEventListener('click', async function(e) {
-            e.preventDefault();
 
-            if (resendLink.classList.contains('cdw-disabled')) return;
+    // ─────────────────────────────────────────────────────────────────────────
+    // EXPORT PUBLIC
+    // ─────────────────────────────────────────────────────────────────────────
 
-            resendLink.classList.add('cdw-disabled');
-            const originalText = resendLink.textContent;
-            resendLink.textContent = 'Envoi en cours...';
+    window.CoreDataWidget = Object.freeze({ init, version: '4.0.0' });
 
-            try {
-                await fetchAPI(CONFIG.API_BASE + 'resend/', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ client_token: clientToken })
-                });
-
-                resendLink.textContent = originalText;
-                showToast('success', 'Nouveau code envoyé');
-
-                if (codeInputs) {
-                    for (var i = 0; i < 6; i++) {
-                        codeInputs.children[i].value = '';
-                        codeInputs.children[i].disabled = false;
-                    }
-                    codeInputs.children[0].focus();
-                }
-
-                setTimeout(function() {
-                    resendLink.classList.remove('cdw-disabled');
-                }, 60000);
-
-            } catch (error) {
-                resendLink.classList.remove('cdw-disabled');
-                resendLink.textContent = originalText;
-                showToast('error', error.message);
-            }
-        });
-    }
-
-    // ============================================================================
-    // EXPORT
-    // ============================================================================
-
-    window.CoreDataWidget = {
-        init: init,
-        version: '3.4.0'
-    };
-
-    // Auto-init
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function() { init(); });
+        document.addEventListener('DOMContentLoaded', () => init(), { once: true });
     } else {
         init();
     }

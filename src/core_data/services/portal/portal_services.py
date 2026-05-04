@@ -156,20 +156,27 @@ def ingest(
     """
     Enregistre ou met à jour un lead — logique en 3 niveaux.
 
-    Niveau 1 — Reconnaissance appareil (MAC / token)
-        → Mise à jour silencieuse, aucun questionnement.
+    Niveau 1 — Reconnaissance par device (MAC ou token)
+        → Mise à jour silencieuse du client existant. Aucun questionnement.
+        → Pas de création de doublon, pas d'alerte.
 
-    Niveau 2 — Contact connu, nouveaux appareil, noms identiques
-        → Rattachement silencieux du device, zéro friction, zéro alerte.
+    Niveau 2 — Conflit détecté (email/téléphone connu, device inconnu)
+        → Règle absolue : on n'écrase JAMAIS le client existant.
+        → Cas particulier (payload identique) : rattachement silencieux du
+          nouveau device au client existant + alerte owner. Pas de doublon.
 
-    Niveau 3 — Contact connu, noms différents ou absents
-        → Stratégie ALLOW   : création silencieuse d'un nouveau client.
-        → Stratégie REQUIRE_OTP : retour identity_conflict=True au widget.
-          Si identity_confirmed=True (réponse "Oui") :
-            - Nouveau client créé avec les données soumises.
-            - ConflictAlert créée (cas ambigu confirmé).
-          Si identity_confirmed=False (ou "Non") et pas de confirmation :
-            - Retour identity_conflict au widget pour affichage Oui/Non.
+        → Stratégie ALLOW :
+            Nouveau client créé silencieusement + alerte owner.
+            L'utilisateur ne voit rien, zéro friction.
+
+        → Stratégie REQUIRE_OTP :
+            Premier passage  → question posée à l'utilisateur ("Est-ce vous ?").
+            Deuxième passage → nouveau client créé dans tous les cas + alerte owner.
+            Le Oui/Non de l'utilisateur est une info contextuelle pour le owner,
+            il ne change pas le résultat : un nouveau client est toujours créé.
+
+    Niveau 3 — Nouveau client (aucune correspondance détectée)
+        → Création simple. Vérification OTP envoyée si opt=True.
 
     Principe absolu : le client passe TOUJOURS. Jamais de blocage.
     """
@@ -208,19 +215,34 @@ def ingest(
             user_agent=user_agent
         )
 
-    # ── Niveau 2 / 3 : Contact connu sur un autre device ─────────────────────
+    # ── Niveau 2 / 3 : Contact connu sur un autre device (CONFLIT) ──────────
+    #
+    # Règle absolue : on n'écrase JAMAIS le client existant.
+    # Un conflit détecté produit toujours :
+    #   - soit un rattachement de device (même payload = même personne évidente)
+    #   - soit un nouveau client créé indépendamment
+    #   + toujours une alerte envoyée au owner
+    #
+    # La stratégie ne joue que sur la friction imposée à l'utilisateur :
+    #   ALLOW          → zéro friction, tout se passe en silence
+    #   REQUIRE_OTP    → on pose la question "Est-ce bien vous ?" avant d'agir
+    #
     if detection['exists'] and detection['conflict_field']:
         existing_client = detection['client']
         conflict_field = detection['conflict_field']
 
-        new_last, new_first = _extract_names_from_payload(payload)
-        ex_last = existing_client.last_name or ''
-        ex_first = existing_client.first_name or ''
-
-        names_identical = _names_match(new_last, new_first, ex_last, ex_first)
-
-        # Niveau 2 : noms identiques ou stratégie ALLOW → rattachement silencieux
-        if names_identical or form_schema.conflict_strategy == 'ALLOW':
+        # Cas spécial : même payload exact + même contact → simple rattachement
+        # de device, c'est manifestement la même personne sur un nouvel appareil.
+        # On rattache sans créer de doublon, mais on alerte quand même le owner.
+        payloads_identical = (existing_client.payload == payload)
+        if payloads_identical:
+            _maybe_create_conflict_alert(
+                owner=form_schema.owner,
+                existing_client=existing_client,
+                conflict_field=conflict_field,
+                payload=payload,
+                mac_address=mac_address
+            )
             return _handle_silent_attachment(
                 client=existing_client,
                 mac_address=mac_address,
@@ -231,9 +253,8 @@ def ingest(
                 user_agent=user_agent
             )
 
-        # Niveau 3 : noms différents / absents + stratégie REQUIRE_OTP
-        # Sous-cas A : le client a répondu "Oui, c'est moi"
-        if identity_confirmed:
+        # ── Stratégie ALLOW : nouveau client créé silencieusement + alerte ──
+        if form_schema.conflict_strategy == 'ALLOW':
             result = _create_new_client(
                 form_schema=form_schema,
                 mac_address=mac_address,
@@ -252,17 +273,41 @@ def ingest(
             )
             return result
 
-        # Sous-cas B : premier passage → demander confirmation au widget
-        return {
-            'created': False,
-            'duplicate': True,
-            'client_token': None,
-            'identity_conflict': True,
-            'requires_verification': False,
-            'verification_pending': False,
-            'conflict_field': conflict_field,
-            'message': 'Ce contact est déjà associé à un compte. Est-ce bien vous ?'
-        }
+        # ── Stratégie REQUIRE_OTP : on demande d'abord confirmation ─────────
+        # Premier passage (identity_confirmed=False) : on pose la question.
+        # L'utilisateur n'est PAS encore enregistré à ce stade.
+        if not identity_confirmed:
+            return {
+                'created': False,
+                'duplicate': True,
+                'client_token': None,
+                'identity_conflict': True,
+                'requires_verification': False,
+                'verification_pending': False,
+                'conflict_field': conflict_field,
+                'message': 'Ce contact est déjà associé à un compte. Est-ce bien vous ?'
+            }
+
+        # Deuxième passage (identity_confirmed=True, réponse "Oui" ou "Non") :
+        # dans les deux cas on crée un nouveau client + alerte.
+        # Le "Oui/Non" est juste une info contextuelle pour le owner dans l'alerte.
+        result = _create_new_client(
+            form_schema=form_schema,
+            mac_address=mac_address,
+            payload=payload,
+            email=email_val,
+            phone=phone_val,
+            client_token=client_token,
+            user_agent=user_agent
+        )
+        _maybe_create_conflict_alert(
+            owner=form_schema.owner,
+            existing_client=existing_client,
+            conflict_field=conflict_field,
+            payload=payload,
+            mac_address=mac_address
+        )
+        return result
 
     # ── Nouveau client (Cas C) ────────────────────────────────────────────────
     return _create_new_client(
