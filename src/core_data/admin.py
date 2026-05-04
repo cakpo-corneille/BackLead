@@ -195,10 +195,11 @@ class OwnerClientAdmin(admin.ModelAdmin):
         """
         Affiche les infos de visite avec date première et dernière visite.
         """
+        last_seen = obj.last_seen.strftime('%Y-%m-%d %H:%M') if obj.last_seen else 'Jamais'
         return format_html(
-            '<span title="First: {} | Last: {}">First visit</span>',
+            '<span title="First: {} | Last: {}">Visits info</span>',
             obj.created_at.strftime('%Y-%m-%d %H:%M'),
-            obj.last_seen.strftime('%Y-%m-%d %H:%M')
+            last_seen
         )
     visit_info.short_description = 'Visits'
 
