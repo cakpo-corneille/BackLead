@@ -68,8 +68,9 @@ if config('BUCKET', default=None):
 
 
 # -- DATABASE --
+
 DATABASES = {
-    'default': dj_database_url.config(default=config('DATABASE_URL'))
+    'default': dj_database_url.config(default=config('DATABASE_URL')) | {'OPTIONS': {'sslmode': 'require'}}
 }
 
 

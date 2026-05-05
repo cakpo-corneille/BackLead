@@ -352,7 +352,7 @@ def ingest(
                 phone_val = payload[f_name]
 
     # _extract_names_from_payload est importée depuis verification_services
-    new_first_name, new_last_name = _extract_names_from_payload(payload)
+    new_last_name, new_first_name = _extract_names_from_payload(payload)
 
     mac_address = mac_address.upper().strip()
 
