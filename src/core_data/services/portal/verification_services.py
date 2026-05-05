@@ -1,5 +1,7 @@
 from typing import Dict, Any, Optional, Tuple
 import uuid
+import re
+import unicodedata
 
 from django.contrib.auth import get_user_model
 
@@ -14,57 +16,64 @@ logger = logging.getLogger(__name__)
 User = get_user_model()
 
 
-def _extract_names_from_payload(payload: dict) -> Tuple[str, str]:
+# ─────────────────────────────────────────────────────────────────────────
+# UTILITAIRES D'EXTRACTION DE NOMS
+# ─────────────────────────────────────────────────────────────────────────
+
+def _extract_names_from_payload(payload: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     """
     Extrait (last_name, first_name) depuis le payload soumis par le widget.
 
-    Logique :
-    1. Champ prénom dédié (prenom, prénom, firstname, first_name) → first_name
-    2. Champ nom dédié (nom, last_name, lastname) :
-       - Si first_name déjà trouvé → toute la valeur = last_name
-       - Sinon et valeur composite (plusieurs mots) → premier mot = last_name, reste = first_name
-       - Sinon → last_name uniquement
-    3. Champs composites (name, nom_complet, nom_prenom, …) si rien trouvé →
-       premier mot = last_name, reste = first_name
+    Gère trois cas :
+    1. Champs dédiés prénom (first_name, prenom, prénom…) et nom (last_name, nom…)
+       détectés par regex pour couvrir toutes les variantes de nommage.
+    2. Champs combinés (nom_prenom, fullname, nom_et_prenom…) : le dernier mot
+       devient le nom de famille, le reste le prénom.
+    3. Champ unique (un seul mot) : assigné au nom de famille par défaut.
+
+    Retourne (last_name, first_name) — les deux peuvent être None si le payload
+    ne contient aucun champ reconnaissable.
     """
+    first_name = None
+    last_name = None
+
     if not payload or not isinstance(payload, dict):
-        return '', ''
+        return None, None
 
-    first_name = ''
-    last_name = ''
+    first_patterns    = r'(first_?name|prenom|prénom)(?!.*last)'
+    last_patterns     = r'(last_?name|nom)(?!.*first)'
+    combined_patterns = r'(nom_?prenom|nomprenoms?|nom_et_?prenom|prenom_?et_?nom|full_?name|fullname)'
 
-    for key in ('prenom', 'prénom', 'firstname', 'first_name'):
-        val = payload.get(key)
-        if val and str(val).strip():
-            first_name = str(val).strip()
-            break
+    for key, value in payload.items():
+        if not value or not isinstance(value, str):
+            continue
 
-    for key in ('nom', 'last_name', 'lastname'):
-        val = payload.get(key)
-        if val and str(val).strip():
-            cleaned = str(val).strip()
-            parts = cleaned.split()
-            if first_name or len(parts) == 1:
-                last_name = cleaned
-            else:
+        key_lower = key.lower().replace('-', '_')
+
+        # Cas 1 : champ combiné → dernier mot = nom, le reste = prénom
+        if re.search(combined_patterns, key_lower):
+            parts = value.strip().split()
+            if len(parts) >= 2:
+                last_name  = parts[-1]
+                first_name = ' '.join(parts[:-1])
+            elif len(parts) == 1:
                 last_name = parts[0]
-                first_name = ' '.join(parts[1:])
-            break
+            continue
 
-    if not first_name and not last_name:
-        for key in ('name', 'nom_complet', 'nom_prenom', 'nom_prenoms', 'nom_et_prenom', 'nom_etprenoms'):
-            val = payload.get(key)
-            if val and str(val).strip():
-                parts = str(val).strip().split()
-                if len(parts) >= 2:
-                    last_name = parts[0]
-                    first_name = ' '.join(parts[1:])
-                else:
-                    last_name = parts[0]
-                break
+        # Cas 2 : champ prénom seul
+        if re.search(first_patterns, key_lower) and not first_name:
+            first_name = value.strip()
+
+        # Cas 3 : champ nom seul
+        if re.search(last_patterns, key_lower) and not last_name:
+            last_name = value.strip()
 
     return last_name, first_name
 
+
+# ─────────────────────────────────────────────────────────────────────────
+# UTILITAIRES DE DEVICE
+# ─────────────────────────────────────────────────────────────────────────
 
 def _upsert_device(client: OwnerClient, mac_address: str, user_agent: str = '') -> None:
     """
@@ -81,18 +90,10 @@ def _upsert_device(client: OwnerClient, mac_address: str, user_agent: str = '') 
         device.save(update_fields=['user_agent', 'last_seen'])
 
 
-def _names_match(last1: str, first1: str, last2: str, first2: str) -> bool:
-    """
-    Compare deux paires (nom, prénom) de façon insensible à la casse.
-    Retourne False si l'une des deux paires est vide (indéterminé → pas de match).
-    """
-    if not (last1 or first1) or not (last2 or first2):
-        return False
-    return (
-        last1.strip().lower() == last2.strip().lower() and
-        first1.strip().lower() == first2.strip().lower()
-    )
 
+# ─────────────────────────────────────────────────────────────────────────
+# DÉTECTION DE CLIENT EXISTANT
+# ─────────────────────────────────────────────────────────────────────────
 
 def detect_existing_client(
     form_schema: FormSchema,
@@ -105,9 +106,10 @@ def detect_existing_client(
     Détecte si un client existe déjà dans la base.
 
     Logique de détection (par ordre de priorité) :
-    1. Par MAC address ou client_token (même device)
-    2. Par email (même personne, device différent)
-    3. Par phone (même personne, device différent)
+    1. Par MAC address (même device)
+    2. Par client_token (même personne, reconnaissance cross-device)
+    3. Par email (même personne, device différent → conflit potentiel)
+    4. Par phone (même personne, device différent → conflit potentiel)
 
     Returns:
         {
@@ -197,6 +199,10 @@ def detect_existing_client(
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# VÉRIFICATION OTP
+# ─────────────────────────────────────────────────────────────────────────
+
 def verify_client_code(client: OwnerClient, code: str) -> Tuple[bool, str]:
     """
     Vérifie le code OTP et résout les alertes en attente si succès.
@@ -215,6 +221,10 @@ def verify_client_code(client: OwnerClient, code: str) -> Tuple[bool, str]:
 
     return success, error_msg
 
+
+# ─────────────────────────────────────────────────────────────────────────
+# HANDLERS DE CLIENTS
+# ─────────────────────────────────────────────────────────────────────────
 
 def _handle_device_recognition(
     client: OwnerClient,
@@ -261,64 +271,21 @@ def _handle_device_recognition(
     }
 
 
-def _handle_silent_attachment(
-    client: OwnerClient,
-    mac_address: str,
-    payload: dict,
-    email: Optional[str],
-    phone: Optional[str],
-    form_schema: FormSchema,
-    user_agent: str = ''
-) -> dict:
-    """
-    Niveau 2 — Rattache silencieusement un nouveau device à un client existant
-    dont les noms correspondent (même personne, nouvel appareil).
-    Zéro friction, zéro alerte.
-    """
-    client.mac_address = mac_address
-    client.payload = payload
-    if email:
-        client.email = email
-    if phone:
-        client.phone = phone
-    if user_agent:
-        client.user_agent = user_agent
-
-    last_name, first_name = _extract_names_from_payload(payload)
-    if last_name:
-        client.last_name = last_name
-    if first_name:
-        client.first_name = first_name
-
-    client.save()
-    _upsert_device(client, mac_address, user_agent)
-
-    requires_verification = form_schema.opt and not client.is_verified
-    if requires_verification:
-        send_code_async_or_sync(client)
-
-    return {
-        'created': False,
-        'duplicate': True,
-        'client_token': client.client_token,
-        'requires_verification': requires_verification,
-        'verification_pending': False,
-        'conflict_field': None,
-        'message': 'Appareil associé à votre compte avec succès.'
-    }
-
-
 def _create_new_client(
     form_schema: FormSchema,
     mac_address: str,
     payload: dict,
     email: Optional[str],
     phone: Optional[str],
-    client_token: Optional[str],
     user_agent: str = ''
 ) -> dict:
     """
-    Crée un nouveau client (personne + device inconnus, ou "Non c'est pas moi").
+    Crée un nouveau client (personne + device inconnus).
+
+    Le client_token est TOUJOURS généré côté serveur via uuid.uuid4().
+    On n'accepte jamais un token venant du frontend pour éviter qu'un token
+    persisté dans le localStorage d'un ancien device puisse "ressusciter"
+    un profil supprimé ou usurper l'identité d'un client existant.
     """
     last_name, first_name = _extract_names_from_payload(payload)
 
@@ -330,7 +297,7 @@ def _create_new_client(
         phone=phone or None,
         first_name=first_name,
         last_name=last_name,
-        client_token=client_token or str(uuid.uuid4()),
+        client_token=str(uuid.uuid4()),  # toujours généré côté serveur
         user_agent=user_agent or ''
     )
     _upsert_device(client, mac_address, user_agent)
