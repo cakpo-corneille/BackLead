@@ -5,12 +5,14 @@ venv
 *.env
 */.env
 *.env.local
+*.env.example
 *venv
 *.venv
 */.env
 # Fichiers de log et temporaires
 *.log
 *.tmp
+*backup.sql
 
 # Fichiers de base de données
 */db.sqlite3
